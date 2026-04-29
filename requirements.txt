@@ -1,0 +1,3 @@
+PyQt5>=5.15
+ezdxf>=1.0
+shapely>=2.0
