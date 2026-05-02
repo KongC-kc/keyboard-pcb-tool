@@ -60,7 +60,7 @@ class AvoidanceEditor(QWidget):
         layout.setSpacing(6)
 
         # Label
-        label = QLabel("Avoidance Polygons")
+        label = QLabel("避空区域")
         label.setStyleSheet("font-weight: bold;")
         layout.addWidget(label)
 
@@ -74,23 +74,23 @@ class AvoidanceEditor(QWidget):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(4)
 
-        self._btn_confirm = QPushButton("Confirm")
+        self._btn_confirm = QPushButton("确认")
         self._btn_confirm.clicked.connect(self._on_confirm_clicked)
         btn_layout.addWidget(self._btn_confirm)
 
-        self._btn_delete = QPushButton("Delete")
+        self._btn_delete = QPushButton("删除")
         self._btn_delete.clicked.connect(self._on_delete_clicked)
         btn_layout.addWidget(self._btn_delete)
 
-        self._btn_add_rect = QPushButton("Add Rectangle")
+        self._btn_add_rect = QPushButton("添加矩形")
         self._btn_add_rect.clicked.connect(lambda: self.draw_mode_requested.emit("rect"))
         btn_layout.addWidget(self._btn_add_rect)
 
-        self._btn_add_poly = QPushButton("Add Polygon")
+        self._btn_add_poly = QPushButton("添加多边形")
         self._btn_add_poly.clicked.connect(lambda: self.draw_mode_requested.emit("polygon"))
         btn_layout.addWidget(self._btn_add_poly)
 
-        self._btn_edit = QPushButton("Edit")
+        self._btn_edit = QPushButton("编辑")
         self._btn_edit.clicked.connect(self._on_edit_clicked)
         btn_layout.addWidget(self._btn_edit)
 
@@ -99,13 +99,13 @@ class AvoidanceEditor(QWidget):
 
     def _create_properties_panel(self) -> QWidget:
         """Create the properties panel for selected polygon."""
-        panel = QGroupBox("Properties")
+        panel = QGroupBox("属性")
         layout = QVBoxLayout(panel)
         layout.setSpacing(6)
 
         # Label field
         label_layout = QHBoxLayout()
-        label_layout.addWidget(QLabel("Label:"))
+        label_layout.addWidget(QLabel("标签:"))
         self._label_edit = QLineEdit()
         self._label_edit.editingFinished.connect(self._on_properties_changed)
         label_layout.addWidget(self._label_edit)
@@ -113,18 +113,19 @@ class AvoidanceEditor(QWidget):
 
         # Confidence field
         conf_layout = QHBoxLayout()
-        conf_layout.addWidget(QLabel("Confidence:"))
+        conf_layout.addWidget(QLabel("置信度:"))
         self._confidence_combo = QComboBox()
-        self._confidence_combo.addItems(["suspected", "confirmed"])
+        self._confidence_combo.addItem("疑似", "suspected")
+        self._confidence_combo.addItem("已确认", "confirmed")
         self._confidence_combo.currentTextChanged.connect(self._on_properties_changed)
         conf_layout.addWidget(self._confidence_combo)
         layout.addLayout(conf_layout)
 
         # Layer expansion table
-        layout.addWidget(QLabel("Layer Expansion (mm):"))
+        layout.addWidget(QLabel("图层扩展 (mm):"))
         self._expansion_table = QTableWidget()
         self._expansion_table.setColumnCount(2)
-        self._expansion_table.setHorizontalHeaderLabels(["Layer", "Expansion"])
+        self._expansion_table.setHorizontalHeaderLabels(["图层", "扩展值"])
         self._expansion_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self._expansion_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self._expansion_table.verticalHeader().setVisible(False)
@@ -132,7 +133,7 @@ class AvoidanceEditor(QWidget):
         layout.addWidget(self._expansion_table)
 
         # Vertices table
-        layout.addWidget(QLabel("Vertices:"))
+        layout.addWidget(QLabel("顶点:"))
         self._vertices_table = QTableWidget()
         self._vertices_table.setColumnCount(2)
         self._vertices_table.setHorizontalHeaderLabels(["X (mm)", "Y (mm)"])
@@ -164,7 +165,7 @@ class AvoidanceEditor(QWidget):
             spin_box.setSingleStep(0.1)
             spin_box.setDecimals(2)
             spin_box.setValue(layer.default_avoidance_expansion)
-            spin_box.setSpecialValueText("Default")  # Shows when value is 0 or unset
+            spin_box.setSpecialValueText("默认")
             self._expansion_table.setCellWidget(row, 1, spin_box)
 
     def _set_properties_enabled(self, enabled: bool):
@@ -179,7 +180,8 @@ class AvoidanceEditor(QWidget):
         self._list_widget.clear()
         for i, poly in enumerate(self._polygons):
             item = QListWidgetItem()
-            text = f"{poly.label or 'Unnamed'} [{poly.confidence}] ({poly.source})"
+            conf_display = "已确认" if poly.confidence == "confirmed" else "疑似"
+            text = f"{poly.label or '未命名'} [{conf_display}] ({poly.source})"
             item.setText(text)
 
             # Color-coded icon based on confidence
@@ -217,7 +219,10 @@ class AvoidanceEditor(QWidget):
             self._label_edit.setText(poly.label)
 
             # Confidence
-            self._confidence_combo.setCurrentText(poly.confidence)
+            for i in range(self._confidence_combo.count()):
+                if self._confidence_combo.itemData(i) == poly.confidence:
+                    self._confidence_combo.setCurrentIndex(i)
+                    break
 
             # Layer expansions
             for row, layer in enumerate(DEFAULT_LAYERS):
@@ -284,7 +289,7 @@ class AvoidanceEditor(QWidget):
 
         poly = self._polygons[self._selected_index]
         poly.label = self._label_edit.text()
-        poly.confidence = self._confidence_combo.currentText()
+        poly.confidence = self._confidence_combo.currentData() or self._confidence_combo.currentText()
 
         self._refresh_list()
         self.polygon_updated.emit(self._selected_index, poly)
@@ -349,7 +354,7 @@ class AvoidanceEditor(QWidget):
             vertices=vertices,
             confidence="suspected" if source == "auto" else "confirmed",
             source=source,
-            label=f"Polygon {len(self._polygons) + 1}"
+            label=f"多边形 {len(self._polygons) + 1}"
         )
         self._polygons.append(poly)
         self._refresh_list()

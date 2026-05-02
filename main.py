@@ -9,9 +9,9 @@ _pkg_dir = os.path.dirname(os.path.abspath(__file__))
 if _pkg_dir not in sys.path:
     sys.path.insert(0, _pkg_dir)
 
-from PyQt5.QtWidgets import QApplication, QPalette
+from PyQt5.QtWidgets import QApplication
+from PyQt5.QtGui import QPalette, QColor
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor
 
 # Enable high-DPI scaling
 QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)

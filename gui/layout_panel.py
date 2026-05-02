@@ -62,7 +62,7 @@ class LayoutPanel(QWidget):
 
     def _create_candidates_panel(self) -> QWidget:
         """Create the candidate split zones panel."""
-        panel = QGroupBox("Candidate Split Zones")
+        panel = QGroupBox("候选分裂区域")
         layout = QVBoxLayout(panel)
         layout.setSpacing(6)
 
@@ -76,15 +76,15 @@ class LayoutPanel(QWidget):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(4)
 
-        self._btn_create_group = QPushButton("Create Group")
+        self._btn_create_group = QPushButton("创建组")
         self._btn_create_group.clicked.connect(self._on_create_group_from_candidate)
         btn_layout.addWidget(self._btn_create_group)
 
-        self._btn_ignore_candidate = QPushButton("Ignore")
+        self._btn_ignore_candidate = QPushButton("忽略")
         self._btn_ignore_candidate.clicked.connect(self._on_ignore_candidate)
         btn_layout.addWidget(self._btn_ignore_candidate)
 
-        self._btn_detect_candidates = QPushButton("Detect Candidates")
+        self._btn_detect_candidates = QPushButton("重新检测")
         self._btn_detect_candidates.clicked.connect(self._on_detect_candidates)
         btn_layout.addWidget(self._btn_detect_candidates)
 
@@ -93,7 +93,7 @@ class LayoutPanel(QWidget):
 
     def _create_groups_panel(self) -> QWidget:
         """Create the layout groups panel."""
-        panel = QGroupBox("Layout Groups")
+        panel = QGroupBox("配列组")
         layout = QVBoxLayout(panel)
         layout.setSpacing(6)
 
@@ -107,11 +107,11 @@ class LayoutPanel(QWidget):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(4)
 
-        self._btn_add_group = QPushButton("Add Group")
+        self._btn_add_group = QPushButton("添加组")
         self._btn_add_group.clicked.connect(self._on_add_group)
         btn_layout.addWidget(self._btn_add_group)
 
-        self._btn_remove_group = QPushButton("Remove Group")
+        self._btn_remove_group = QPushButton("删除组")
         self._btn_remove_group.clicked.connect(self._on_remove_group)
         btn_layout.addWidget(self._btn_remove_group)
 
@@ -120,13 +120,13 @@ class LayoutPanel(QWidget):
 
     def _create_editor_panel(self) -> QWidget:
         """Create the group editor panel."""
-        panel = QGroupBox("Group Editor")
+        panel = QGroupBox("组编辑器")
         layout = QVBoxLayout(panel)
         layout.setSpacing(6)
 
         # Group name
         name_layout = QHBoxLayout()
-        name_layout.addWidget(QLabel("Name:"))
+        name_layout.addWidget(QLabel("名称:"))
         self._group_name_edit = QLineEdit()
         self._group_name_edit.editingFinished.connect(self._on_group_properties_changed)
         name_layout.addWidget(self._group_name_edit)
@@ -134,17 +134,17 @@ class LayoutPanel(QWidget):
 
         # Group description
         desc_layout = QHBoxLayout()
-        desc_layout.addWidget(QLabel("Description:"))
+        desc_layout.addWidget(QLabel("描述:"))
         self._group_desc_edit = QLineEdit()
         self._group_desc_edit.editingFinished.connect(self._on_group_properties_changed)
         desc_layout.addWidget(self._group_desc_edit)
         layout.addLayout(desc_layout)
 
         # Options section
-        layout.addWidget(QLabel("Options:"))
+        layout.addWidget(QLabel("选项:"))
         self._options_table = QTableWidget()
         self._options_table.setColumnCount(3)
-        self._options_table.setHorizontalHeaderLabels(["", "Name", "Switches"])
+        self._options_table.setHorizontalHeaderLabels(["", "名称", "轴体"])
         self._options_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self._options_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self._options_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
@@ -158,11 +158,11 @@ class LayoutPanel(QWidget):
         opt_btn_layout = QHBoxLayout()
         opt_btn_layout.setSpacing(4)
 
-        self._btn_add_option = QPushButton("Add Option")
+        self._btn_add_option = QPushButton("添加选项")
         self._btn_add_option.clicked.connect(self._on_add_option)
         opt_btn_layout.addWidget(self._btn_add_option)
 
-        self._btn_remove_option = QPushButton("Remove Option")
+        self._btn_remove_option = QPushButton("删除选项")
         self._btn_remove_option.clicked.connect(self._on_remove_option)
         opt_btn_layout.addWidget(self._btn_remove_option)
 
@@ -170,7 +170,7 @@ class LayoutPanel(QWidget):
 
         # Switch assignment mode
         assign_layout = QHBoxLayout()
-        self._assign_mode_check = QCheckBox("Assign Switches Mode")
+        self._assign_mode_check = QCheckBox("轴体分配模式")
         self._assign_mode_check.toggled.connect(self._on_assign_mode_toggled)
         assign_layout.addWidget(self._assign_mode_check)
         assign_layout.addStretch()
@@ -195,7 +195,7 @@ class LayoutPanel(QWidget):
         self._candidates_list.clear()
         for zone in self._candidates:
             item = QListWidgetItem()
-            text = f"{zone.description} at ({zone.center_x:.1f}, {zone.center_y:.1f})"
+            text = f"{zone.description} ({zone.center_x:.1f}, {zone.center_y:.1f})"
             item.setText(text)
             item.setData(Qt.UserRole, zone)
             self._candidates_list.addItem(item)
@@ -207,8 +207,8 @@ class LayoutPanel(QWidget):
             # Add group item
             group_item = QListWidgetItem()
             selected_opt = group.selected_option()
-            selected_name = selected_opt.name if selected_opt else "None"
-            text = f"{group.name}: {selected_name} ({len(group.options)} options)"
+            selected_name = selected_opt.name if selected_opt else "无"
+            text = f"{group.name}: {selected_name} ({len(group.options)} 个选项)"
             group_item.setText(text)
             group_item.setData(Qt.UserRole, i)
             self._groups_list.addItem(group_item)
@@ -259,7 +259,7 @@ class LayoutPanel(QWidget):
                 self._options_table.setItem(row, 1, name_item)
 
                 # Switch refs
-                refs_text = ", ".join(option.switch_refs) if option.switch_refs else "None"
+                refs_text = ", ".join(option.switch_refs) if option.switch_refs else "无"
                 refs_item = QTableWidgetItem(refs_text)
                 refs_item.setFlags(refs_item.flags() & ~Qt.ItemIsEditable)
                 refs_item.setData(Qt.UserRole, option.switch_refs)
@@ -291,14 +291,14 @@ class LayoutPanel(QWidget):
         options = []
         for i, switch in enumerate(zone.switches):
             option_id = f"{group_id}_opt_{i + 1}"
-            option_name = f"Option {i + 1}"
+            option_name = f"选项 {i + 1}"
             options.append(LayoutOption(id=option_id, name=option_name, switch_refs=[switch.ref]))
 
         # Create group
         group = LayoutGroup(
             id=group_id,
-            name=f"Zone ({zone.grid_col}, {zone.grid_row})",
-            description=f"Candidate zone with {len(zone.switches)} switches",
+            name=f"区域 ({zone.grid_col}, {zone.grid_row})",
+            description=f"候选区域，含 {len(zone.switches)} 个轴体",
             options=options,
             selected_option_id=options[0].id if options else None
         )
@@ -341,7 +341,7 @@ class LayoutPanel(QWidget):
         group_id = f"group_{len(self._groups) + 1}"
         group = LayoutGroup(
             id=group_id,
-            name=f"Group {len(self._groups) + 1}",
+            name=f"组 {len(self._groups) + 1}",
             description="",
             options=[],
             selected_option_id=None
@@ -421,7 +421,7 @@ class LayoutPanel(QWidget):
 
         group = self._groups[self._selected_group_index]
         option_id = f"{group.id}_opt_{len(group.options) + 1}"
-        option = LayoutOption(id=option_id, name=f"Option {len(group.options) + 1}", switch_refs=[])
+        option = LayoutOption(id=option_id, name=f"选项 {len(group.options) + 1}", switch_refs=[])
 
         group.options.append(option)
 

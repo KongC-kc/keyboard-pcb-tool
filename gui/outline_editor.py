@@ -58,15 +58,15 @@ class OutlineEditor(QWidget):
 
     def _create_outline_section(self) -> QGroupBox:
         """Create the board outline section."""
-        group = QGroupBox("Board Outline")
+        group = QGroupBox("板框")
         layout = QVBoxLayout()
         layout.setSpacing(8)
 
         # Source selector
         source_layout = QHBoxLayout()
-        source_layout.addWidget(QLabel("Source:"))
+        source_layout.addWidget(QLabel("来源:"))
         self.outline_source_combo = QComboBox()
-        self.outline_source_combo.addItems(["From PCB (auto)", "Manual Draw", "Import DXF"])
+        self.outline_source_combo.addItems(["从PCB自动识别", "手动绘制", "导入DXF"])
         self.outline_source_combo.currentIndexChanged.connect(
             self._on_outline_source_changed
         )
@@ -75,7 +75,7 @@ class OutlineEditor(QWidget):
         layout.addLayout(source_layout)
 
         # Auto-detected info (for "From PCB")
-        self.auto_outline_info = QLabel("No PCB data loaded")
+        self.auto_outline_info = QLabel("未加载PCB数据")
         self.auto_outline_info.setWordWrap(True)
         self.auto_outline_info.setStyleSheet("color: gray; font-style: italic;")
         layout.addWidget(self.auto_outline_info)
@@ -86,12 +86,12 @@ class OutlineEditor(QWidget):
         manual_layout.setContentsMargins(0, 0, 0, 0)
 
         btn_layout = QHBoxLayout()
-        self.start_draw_btn = QPushButton("Start Drawing")
+        self.start_draw_btn = QPushButton("开始绘制")
         self.start_draw_btn.clicked.connect(self._on_start_drawing)
-        self.finish_draw_btn = QPushButton("Finish")
+        self.finish_draw_btn = QPushButton("完成")
         self.finish_draw_btn.clicked.connect(self._on_finish_drawing)
         self.finish_draw_btn.setEnabled(False)
-        self.clear_outline_btn = QPushButton("Clear")
+        self.clear_outline_btn = QPushButton("清除")
         self.clear_outline_btn.clicked.connect(self._on_clear_outline)
         self.clear_outline_btn.setEnabled(False)
 
@@ -120,9 +120,9 @@ class OutlineEditor(QWidget):
         dxf_layout = QHBoxLayout()
         dxf_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.browse_dxf_btn = QPushButton("Browse DXF")
+        self.browse_dxf_btn = QPushButton("选择DXF文件")
         self.browse_dxf_btn.clicked.connect(self._on_browse_dxf)
-        self.dxf_info_label = QLabel("No file selected")
+        self.dxf_info_label = QLabel("未选择文件")
         self.dxf_info_label.setStyleSheet("color: gray;")
 
         dxf_layout.addWidget(self.browse_dxf_btn)
@@ -135,9 +135,9 @@ class OutlineEditor(QWidget):
 
         # Common: outline stats
         stats_layout = QHBoxLayout()
-        stats_layout.addWidget(QLabel("Stats:"))
-        self.outline_area_label = QLabel("Area: -- mm²")
-        self.outline_dims_label = QLabel("Dimensions: --")
+        stats_layout.addWidget(QLabel("统计:"))
+        self.outline_area_label = QLabel("面积: -- mm²")
+        self.outline_dims_label = QLabel("尺寸: --")
         stats_layout.addWidget(self.outline_area_label)
         stats_layout.addWidget(self.outline_dims_label)
         stats_layout.addStretch()
@@ -148,15 +148,15 @@ class OutlineEditor(QWidget):
 
     def _create_screw_hole_section(self) -> QGroupBox:
         """Create the screw holes section."""
-        group = QGroupBox("Screw Holes")
+        group = QGroupBox("螺丝孔")
         layout = QVBoxLayout()
         layout.setSpacing(8)
 
         # Source selector
         source_layout = QHBoxLayout()
-        source_layout.addWidget(QLabel("Source:"))
+        source_layout.addWidget(QLabel("来源:"))
         self.hole_source_combo = QComboBox()
-        self.hole_source_combo.addItems(["From PCB (auto)", "Manual Place", "Import"])
+        self.hole_source_combo.addItems(["从PCB自动识别", "手动放置", "导入"])
         self.hole_source_combo.currentIndexChanged.connect(
             self._on_hole_source_changed
         )
@@ -168,7 +168,7 @@ class OutlineEditor(QWidget):
         self.hole_table = QTableWidget()
         self.hole_table.setColumnCount(5)
         self.hole_table.setHorizontalHeaderLabels(
-            ["X (mm)", "Y (mm)", "Diameter (mm)", "Source", ""]
+            ["X (mm)", "Y (mm)", "直径 (mm)", "来源", ""]
         )
         self.hole_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.hole_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -183,7 +183,7 @@ class OutlineEditor(QWidget):
 
         # Diameter selector for new holes
         diameter_layout = QHBoxLayout()
-        diameter_layout.addWidget(QLabel("New hole diameter:"))
+        diameter_layout.addWidget(QLabel("新孔直径:"))
         self.hole_diameter_spin = QDoubleSpinBox()
         self.hole_diameter_spin.setRange(1.0, 10.0)
         self.hole_diameter_spin.setSingleStep(0.1)
@@ -193,15 +193,15 @@ class OutlineEditor(QWidget):
         diameter_layout.addWidget(self.hole_diameter_spin)
         controls_layout.addLayout(diameter_layout)
 
-        self.add_hole_btn = QPushButton("Add Hole")
+        self.add_hole_btn = QPushButton("添加孔位")
         self.add_hole_btn.clicked.connect(self._on_add_hole)
         controls_layout.addWidget(self.add_hole_btn)
 
-        self.add_hole_from_pcb_btn = QPushButton("Add from PCB")
+        self.add_hole_from_pcb_btn = QPushButton("从PCB导入")
         self.add_hole_from_pcb_btn.clicked.connect(self._on_add_holes_from_pcb)
         controls_layout.addWidget(self.add_hole_from_pcb_btn)
 
-        self.clear_holes_btn = QPushButton("Clear All")
+        self.clear_holes_btn = QPushButton("全部清除")
         self.clear_holes_btn.clicked.connect(self._on_clear_holes)
         controls_layout.addWidget(self.clear_holes_btn)
 
@@ -216,12 +216,12 @@ class OutlineEditor(QWidget):
         source = self.outline_source_combo.currentText()
 
         # Hide all sub-widgets first
-        self.auto_outline_info.setVisible(source == "From PCB (auto)")
-        self.manual_draw_widget.setVisible(source == "Manual Draw")
-        self.dxf_import_widget.setVisible(source == "Import DXF")
+        self.auto_outline_info.setVisible(source == "从PCB自动识别")
+        self.manual_draw_widget.setVisible(source == "手动绘制")
+        self.dxf_import_widget.setVisible(source == "导入DXF")
 
         # Update button states
-        if source == "Manual Draw":
+        if source == "手动绘制":
             self.start_draw_btn.setEnabled(True)
         else:
             self.start_draw_btn.setEnabled(False)
@@ -259,7 +259,7 @@ class OutlineEditor(QWidget):
     def _on_browse_dxf(self):
         """Browse for DXF file to import and parse board outline."""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Import DXF Outline", "", "DXF Files (*.dxf);;All Files (*)"
+            self, "导入DXF板框", "", "DXF文件 (*.dxf);;所有文件 (*)"
         )
         if not file_path:
             return
@@ -268,7 +268,7 @@ class OutlineEditor(QWidget):
             outline, screw_holes = parse_board_outline_dxf(file_path)
         except Exception as e:
             from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.critical(self, "DXF Import Error", f"Failed to parse DXF:\n\n{str(e)}")
+            QMessageBox.critical(self, "DXF导入错误", f"解析DXF失败:\n\n{str(e)}")
             return
 
         if outline and outline.is_valid():
@@ -276,14 +276,14 @@ class OutlineEditor(QWidget):
             self._update_vertex_table()
             self._update_outline_stats()
             self.outline_changed.emit(self.outline_vertices, "dxf_import")
-            self.dxf_info_label.setText(f"{file_path} ({len(outline.vertices)} vertices)")
+            self.dxf_info_label.setText(f"{file_path} ({len(outline.vertices)} 个顶点)")
         else:
-            self.dxf_info_label.setText(f"{file_path} (no outline found)")
+            self.dxf_info_label.setText(f"{file_path} (未找到板框)")
 
         # Import screw holes
         if screw_holes:
             for hole in screw_holes:
-                self._add_hole_to_table(hole.x, hole.y, hole.diameter, "DXF")
+                self._add_hole_to_table(hole.x, hole.y, hole.diameter, "导入")
                 self.screw_holes.append(hole)
 
         self.import_dxf_requested.emit()
@@ -296,7 +296,7 @@ class OutlineEditor(QWidget):
         """Add screw holes detected from PCB."""
         if self.pcb_data and self.pcb_data.screw_holes:
             for hole in self.pcb_data.screw_holes:
-                self._add_hole_to_table(hole.x, hole.y, hole.diameter, "PCB")
+                self._add_hole_to_table(hole.x, hole.y, hole.diameter, "自动")
                 self.screw_holes.append(hole)
             self.hole_added.emit(
                 self.pcb_data.screw_holes[0].x,
@@ -322,19 +322,19 @@ class OutlineEditor(QWidget):
             vertices = pcb.board_outline.vertices
             perimeter = self._calculate_perimeter(vertices)
             self.auto_outline_info.setText(
-                f"Detected: {len(vertices)} vertices, Perimeter: {perimeter:.2f} mm"
+                f"已识别: {len(vertices)} 个顶点, 周长: {perimeter:.2f} mm"
             )
             self.outline_vertices = vertices
             self._update_vertex_table()
             self._update_outline_stats()
             self.outline_changed.emit(vertices, "pcb")
         else:
-            self.auto_outline_info.setText("No outline detected in PCB")
+            self.auto_outline_info.setText("PCB中未检测到板框")
 
         # Update screw holes
         if pcb.screw_holes:
             for hole in pcb.screw_holes:
-                self._add_hole_to_table(hole.x, hole.y, hole.diameter, "PCB")
+                self._add_hole_to_table(hole.x, hole.y, hole.diameter, "自动")
                 self.screw_holes.append(hole)
 
     def get_board_outline(self) -> BoardOutline:
@@ -352,7 +352,7 @@ class OutlineEditor(QWidget):
 
     def add_hole(self, x: float, y: float):
         """Add a screw hole from canvas placement mode."""
-        self._add_hole_to_table(x, y, self.current_hole_diameter, "Manual")
+        self._add_hole_to_table(x, y, self.current_hole_diameter, "手动")
         hole = ScrewHole(x=x, y=y, diameter=self.current_hole_diameter)
         self.screw_holes.append(hole)
         self.hole_added.emit(x, y, self.current_hole_diameter)
@@ -384,7 +384,7 @@ class OutlineEditor(QWidget):
             self.vertex_table.setCellWidget(i, 1, y_spin)
 
             # Remove button
-            remove_btn = QPushButton("Remove")
+            remove_btn = QPushButton("删除")
             remove_btn.clicked.connect(lambda checked, idx=i: self._on_remove_vertex(idx))
             self.vertex_table.setCellWidget(i, 2, remove_btn)
 
@@ -449,7 +449,7 @@ class OutlineEditor(QWidget):
         self.hole_table.setItem(row, 3, source_item)
 
         # Remove button
-        remove_btn = QPushButton("Remove")
+        remove_btn = QPushButton("删除")
         remove_btn.clicked.connect(lambda checked, idx=row: self._on_remove_hole(idx))
         self.hole_table.setCellWidget(row, 4, remove_btn)
 
@@ -489,13 +489,13 @@ class OutlineEditor(QWidget):
         if len(self.outline_vertices) >= 3:
             area = self._calculate_area(self.outline_vertices)
             dims = self._calculate_dimensions(self.outline_vertices)
-            self.outline_area_label.setText(f"Area: {area:.2f} mm²")
+            self.outline_area_label.setText(f"面积: {area:.2f} mm²")
             self.outline_dims_label.setText(
-                f"Dimensions: {dims[0]:.2f} × {dims[1]:.2f} mm"
+                f"尺寸: {dims[0]:.2f} × {dims[1]:.2f} mm"
             )
         else:
-            self.outline_area_label.setText("Area: -- mm²")
-            self.outline_dims_label.setText("Dimensions: --")
+            self.outline_area_label.setText("面积: -- mm²")
+            self.outline_dims_label.setText("尺寸: --")
 
     def _calculate_perimeter(self, vertices: list) -> float:
         """Calculate perimeter of polygon."""

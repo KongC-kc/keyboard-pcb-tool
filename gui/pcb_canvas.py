@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QPointF, QRectF, pyqtSignal, QLineF
 from PyQt5.QtGui import (
     QPen, QBrush, QColor, QPainter, QPainterPath,
-    QFont, QTransform, QCursor
+    QFont, QTransform, QCursor, QPolygonF
 )
 import math
 
@@ -109,6 +109,8 @@ class PcbCanvas(QGraphicsView):
         self._render_grid()
         self._render_pcb()
         self.fit_to_content()
+        # Flip Y-axis: Altium uses Y-up, Qt uses Y-down
+        self.scale(1, -1)
 
     def update_selection(self, selected_refs: Set[str]) -> None:
         """Highlight selected switches."""
@@ -239,7 +241,7 @@ class PcbCanvas(QGraphicsView):
 
         # Create polygon from vertices
         qt_vertices = [QPointF(x, y) for x, y in outline.vertices]
-        polygon_item.setPolygon(qt_vertices)
+        polygon_item.setPolygon(QPolygonF(qt_vertices))
 
         pen = QPen(BOARD_OUTLINE_COLOR)
         pen.setWidthF(2.0)
@@ -372,8 +374,8 @@ class PcbCanvas(QGraphicsView):
         self._outline_vertices.clear()
 
     def _scene_to_mm(self, pos: QPointF) -> Tuple[float, float]:
-        """Convert scene position to mm coordinates."""
-        return pos.x(), pos.y()
+        """Convert scene position to mm coordinates (Y-flipped for Altium convention)."""
+        return pos.x(), -pos.y()
 
     # Mouse event handlers
     def mousePressEvent(self, event):
@@ -419,12 +421,12 @@ class PcbCanvas(QGraphicsView):
                 else:
                     # Update polygon
                     qt_vertices = self._polygon_vertices + [scene_pos]  # Close to cursor
-                    self._temp_drawing_item.setPolygon(qt_vertices)
+                    self._temp_drawing_item.setPolygon(QPolygonF(qt_vertices))
 
             elif event.button() == Qt.RightButton:
                 # Right-click to close polygon
                 if len(self._polygon_vertices) >= 3:
-                    vertices = [(v.x(), v.y()) for v in self._polygon_vertices]
+                    vertices = [(v.x(), -v.y()) for v in self._polygon_vertices]
                     self.signal_avoidance_created.emit(vertices, "manual")
                     self._cancel_drawing()
 
@@ -462,7 +464,7 @@ class PcbCanvas(QGraphicsView):
             if self._polygon_vertices:
                 # Update polygon to include cursor position
                 qt_vertices = self._polygon_vertices + [scene_pos]
-                self._temp_drawing_item.setPolygon(qt_vertices)
+                self._temp_drawing_item.setPolygon(QPolygonF(qt_vertices))
 
         super().mouseMoveEvent(event)
 
@@ -482,12 +484,12 @@ class PcbCanvas(QGraphicsView):
                 scene_pos = self.mapToScene(event.pos())
                 rect = QRectF(self._drawing_start_pos, scene_pos).normalized()
 
-                # Convert to vertices
+                # Convert to vertices (negate Y for Altium coordinate system)
                 vertices = [
-                    (rect.left(), rect.top()),
-                    (rect.right(), rect.top()),
-                    (rect.right(), rect.bottom()),
-                    (rect.left(), rect.bottom())
+                    (rect.left(), -rect.top()),
+                    (rect.right(), -rect.top()),
+                    (rect.right(), -rect.bottom()),
+                    (rect.left(), -rect.bottom())
                 ]
 
                 self.signal_avoidance_created.emit(vertices, "manual")

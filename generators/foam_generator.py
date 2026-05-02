@@ -59,14 +59,8 @@ def generate_foam_layer(
             dxfattribs={"layer": "SCREW_HOLES"},
         )
 
-    # Get switches - use all in universal mode
-    if universal_mode:
-        switches = pcb.get_switches()
-        if not switches:
-            switches = list(pcb.components)
-    else:
-        active_refs = layout.get_active_switch_refs() if layout and layout.groups else set()
-        switches = [c for c in pcb.get_switches() if c.ref in active_refs] if active_refs else pcb.get_switches()
+    # Get switches - always use all switches (layout refs used for plate only)
+    switches = pcb.get_switches()
 
     # Generate cutouts based on layer type
     cutout_type = layer_config.cutout_type

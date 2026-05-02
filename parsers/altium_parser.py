@@ -14,6 +14,7 @@ Key record types:
 """
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 from typing import Optional
@@ -247,7 +248,12 @@ class AltiumASCIIParser:
         )
 
     def _extract_board_outline(self) -> Optional[BoardOutline]:
-        """Try to extract board outline from tracks on outline/keepout layers."""
+        """Try to extract board outline from tracks on outline/keepout layers.
+
+        Strategy: find the longest tracks first (board boundary edges), then
+        chain remaining shorter segments to close the polygon. This avoids
+        picking up small component outlines that happen to be on the same layer.
+        """
         outline_layers = {"outline", "keepout", "mechanical1", "mechanical 1",
                           "board outline", "mechanical 5", "mechanical5"}
         outline_tracks = [
@@ -258,9 +264,59 @@ class AltiumASCIIParser:
         if len(outline_tracks) < 3:
             return None
 
-        # Chain tracks into a polygon by connecting endpoints
-        vertices = self._chain_tracks(outline_tracks)
+        # Compute track lengths and sort by descending length
+        def _track_length(t):
+            return math.hypot(t["x2"] - t["x1"], t["y2"] - t["y1"])
+
+        sorted_tracks = sorted(outline_tracks, key=_track_length, reverse=True)
+
+        # Filter out tiny tracks (< 5mm) to reduce noise
+        significant = [t for t in sorted_tracks if _track_length(t) >= 5.0]
+        if len(significant) < 3:
+            significant = sorted_tracks
+
+        # Deduplicate tracks (same endpoints on different layers)
+        seen = set()
+        deduped = []
+        for t in significant:
+            key = (round(t["x1"], 1), round(t["y1"], 1),
+                   round(t["x2"], 1), round(t["y2"], 1))
+            rkey = (round(t["x2"], 1), round(t["y2"], 1),
+                    round(t["x1"], 1), round(t["y1"], 1))
+            if key not in seen and rkey not in seen:
+                seen.add(key)
+                deduped.append(t)
+
+        # Chain starting from the longest track, with larger tolerance for gaps
+        vertices = self._chain_tracks(deduped, tolerance=5.0)
         if vertices and len(vertices) >= 3:
+            return BoardOutline(vertices=vertices, source="auto")
+
+        # Fallback: use convex hull of all track endpoints
+        return self._outline_from_convex_hull(deduped)
+
+    @staticmethod
+    def _outline_from_convex_hull(tracks: list[dict]) -> Optional[BoardOutline]:
+        """Build a board outline from the convex hull of track endpoints."""
+        try:
+            from shapely.geometry import MultiPoint
+        except ImportError:
+            return None
+
+        points = []
+        for t in tracks:
+            points.append((t["x1"], t["y1"]))
+            points.append((t["x2"], t["y2"]))
+
+        if len(points) < 3:
+            return None
+
+        hull = MultiPoint(points).convex_hull
+        if hull.is_empty or hull.geom_type != "Polygon":
+            return None
+
+        vertices = list(hull.exterior.coords[:-1])  # drop closing point
+        if len(vertices) >= 3:
             return BoardOutline(vertices=vertices, source="auto")
         return None
 

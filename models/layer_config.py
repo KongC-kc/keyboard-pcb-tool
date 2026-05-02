@@ -28,6 +28,7 @@ DEFAULT_LAYERS: list[FoamLayerConfig] = [
     FoamLayerConfig("ixpe_pad", "声优垫", 0.5, "solid", 0.0, 0.3),
     FoamLayerConfig("bottom_foam", "底棉", 5.0, "circle_large", 10.0, 2.0),
     FoamLayerConfig("back_membrane", "背膜", 1.0, "circle_dense", 3.0, 3.0),
+    FoamLayerConfig("lightboard_fill", "灯板填充", 1.0, "solid", 0.0, 0.5),
 ]
 
 

@@ -33,7 +33,7 @@ class FootprintRulesPanel(QWidget):
         """
         super().__init__(parent)
 
-        self.rule_set = rule_set if rule_set is not None else FootprintRuleSet.DEFAULT_RULES
+        self.rule_set = rule_set if rule_set is not None else FootprintRuleSet.get_default_rules()
         self.pcb_data = None
         self.current_item = None
 
@@ -413,7 +413,7 @@ class FootprintRulesPanel(QWidget):
             # Count switches
             switch_count = sum(
                 1 for comp in self.pcb_data.components
-                if comp.is_switch
+                if comp.classification == "switch"
             )
 
             # Count unmatched
@@ -422,7 +422,7 @@ class FootprintRulesPanel(QWidget):
             # Get matched component refs
             matched_refs = [
                 comp.ref for comp in self.pcb_data.components
-                if comp.is_switch
+                if comp.classification == "switch"
             ]
 
             # Update labels

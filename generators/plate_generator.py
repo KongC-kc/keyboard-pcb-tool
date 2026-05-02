@@ -1,13 +1,9 @@
 """Generate positioning plate DXF with switch cutouts, stab holes, and avoidance."""
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
-from typing import Optional
-
 import ezdxf
 from shapely.geometry import Polygon, box, Point
-from shapely.ops import unary_union
 
 from models.pcb_data import PCBData, Component, ScrewHole
 from models.layout_group import LayoutConfig
@@ -84,16 +80,12 @@ def generate_plate(
 
     msp = doc.modelspace()
 
-    # Get switches - use all if layout not configured
+    # Get switches - use all switches if layout doesn't specify specific refs
+    switches = pcb.get_switches()
     if layout and layout.groups:
         active_refs = layout.get_active_switch_refs()
-        switches = [c for c in pcb.get_switches() if c.ref in active_refs]
-    else:
-        switches = pcb.get_switches()
-
-    # If no switches detected by rules, use all components as fallback
-    if not switches:
-        switches = list(pcb.components)
+        if active_refs:
+            switches = [c for c in switches if c.ref in active_refs]
 
     # Compute avoidance zone
     avoidance = compute_avoidance_zone(avoidance_polygons, layer_config) if avoidance_polygons else None
@@ -139,101 +131,17 @@ def _detect_stabilizers(
     switches: list[Component],
     plate_type: str,
 ) -> list[StabilizerPosition]:
-    """Detect stabilizer positions by finding switch pairs at known stab spacings.
+    """Detect stabilizer positions from switch layout.
 
-    For each pair of switches in the same row, check if their distance matches
-    a standard stabilizer spacing (within tolerance). All matching pairs are
-    returned as stabilizer positions.
+    Note: automatic stabilizer detection from switch positions alone is unreliable
+    because stabilizer wire holes are placed INSIDE the key area (7-10mm from
+    key edge), not at switch positions. For example, a 6.25u spacebar's stab
+    holes at +-50mm from center don't align with any switch pair distance.
+
+    Returns an empty list. Users should add stabilizer positions manually
+    via the plate editor if needed.
     """
-    if not switches:
-        return []
-
-    # Sort switches by row (Y) then column (X)
-    sorted_sw = sorted(switches, key=lambda s: (round(s.y, 0), s.x))
-
-    # Group into rows
-    rows: list[list[Component]] = []
-    current_row: list[Component] = []
-    last_y = None
-    row_tolerance = 3.0  # mm
-
-    for sw in sorted_sw:
-        if last_y is None or abs(sw.y - last_y) > row_tolerance:
-            if current_row:
-                rows.append(current_row)
-            current_row = [sw]
-            last_y = sw.y
-        else:
-            current_row.append(sw)
-    if current_row:
-        rows.append(current_row)
-
-    tolerance = 1.0  # mm tolerance for matching stab spacing
-
-    # Build spacing map, filtering by plate_type
-    # Exclude 2.75u (19.844mm) - too close to 1U spacing (19.05mm) to detect reliably
-    spacings_to_check = {k: v for k, v in STAB_SPACING.items() if k != "2.75u"}
-    if plate_type == PLATE_VARIANT_7U_ENTER:
-        spacings_to_check.pop("6.25u", None)
-    elif plate_type == PLATE_VARIANT_ANSI:
-        spacings_to_check.pop("7u", None)
-
-    stabs: list[StabilizerPosition] = []
-    used_centers: set[tuple[float, float]] = set()
-
-    for row in rows:
-        if len(row) < 2:
-            continue
-        row.sort(key=lambda s: s.x)
-
-        # For each stab size, find the widest pair matching that distance.
-        # A stabilizer pair should span the widest key of that size.
-        for stab_name, stab_dist in spacings_to_check.items():
-            best: tuple[int, int, float, float] | None = None  # (i, j, cx, error)
-            best_span = 0
-
-            for i in range(len(row)):
-                for j in range(i + 1, len(row)):
-                    dist = row[j].x - row[i].x
-                    error = abs(dist - stab_dist)
-                    if error < tolerance:
-                        # Verify switches exist between i and j (confirms wide key)
-                        if j - i >= 2:
-                            span = j - i
-                            if span > best_span or (span == best_span and best and error < best[3]):
-                                cx = (row[i].x + row[j].x) / 2
-                                best = (i, j, cx, error)
-                                best_span = span
-
-            if best:
-                _, _, cx, error = best
-                cy = row[0].y
-                key = (round(cx, 1), round(cy, 1))
-                if key not in used_centers:
-                    used_centers.add(key)
-                    stabs.append(StabilizerPosition(
-                        switch_x=cx,
-                        switch_y=cy,
-                        key_size=stab_name,
-                        orientation="horizontal",
-                    ))
-
-    return stabs
-
-
-def _get_stab_size(key_units: float, plate_type: str) -> Optional[str]:
-    """Determine stabilizer size for a key of given width."""
-    if key_units >= 6.75:
-        if plate_type == PLATE_VARIANT_7U_ENTER:
-            return "7u"
-        return "6.25u"
-    elif key_units >= 2.5:
-        return "2.75u"
-    elif key_units >= 2.1:
-        return "2.25u"
-    elif key_units >= 1.8:
-        return "2u"
-    return None
+    return []
 
 
 def _draw_stabilizer(

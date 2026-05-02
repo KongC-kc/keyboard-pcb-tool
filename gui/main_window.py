@@ -1,11 +1,14 @@
 """
-Main Window for Keyboard PCB Tool Application.
+Main Window — Keyboard PCB Tool
 
-This is the central QMainWindow that integrates all GUI panels with a tabbed
-workflow on the right dock, a PCB canvas in the center, and toolbar/menu controls.
+Linear wizard workflow:
+  Step 1: 导入与解析 (Import & Parse)
+  Step 2: 智能避空配置 (Avoidance & Canvas)
+  Step 3: 配列与微调 (Layout & Fine-tune)
+  Step 4: 一键导出 (Export DXF)
 """
-
 from __future__ import annotations
+import os
 import json
 from pathlib import Path
 from typing import Optional
@@ -13,678 +16,787 @@ from dataclasses import dataclass, field, asdict
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QDockWidget, QTabWidget, QAction, QToolBar,
-    QFileDialog, QMessageBox, QStatusBar, QLabel,
-    QApplication, QToolButton, QButtonGroup
+    QStackedWidget, QPushButton, QLabel, QFileDialog,
+    QMessageBox, QStatusBar, QProgressBar, QGroupBox,
+    QCheckBox, QComboBox, QLineEdit, QDoubleSpinBox,
+    QGridLayout, QScrollArea, QFrame, QApplication,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QSize
-from PyQt5.QtGui import QIcon, QFont, QKeySequence
+from PyQt5.QtGui import QIcon, QFont, QKeySequence, QColor
 
-from models.pcb_data import PCBData
+from models.pcb_data import PCBData, BoardOutline, ScrewHole
 from models.footprint_rules import FootprintRuleSet
-from models.layout_group import LayoutConfig
-from models.layer_config import LayerConfigSet, DEFAULT_LAYERS
+from models.layout_group import LayoutConfig, LayoutGroup, LayoutOption
+from models.layer_config import LayerConfigSet, FoamLayerConfig, DEFAULT_LAYERS
 from models.avoidance import AvoidancePolygon
 
 from parsers.altium_parser import AltiumASCIIParser, validate_ascii_pcb
 from avoidance.detector import detect_suspected_avoidance
+from avoidance.layout_hints import detect_layout_templates, LayoutTemplate
 
 from gui.pcb_canvas import (
     PcbCanvas, MODE_SELECT, MODE_DRAW_RECT, MODE_DRAW_POLYGON,
     MODE_PLACE_HOLE, MODE_DRAW_OUTLINE
 )
-from gui.footprint_rules import FootprintRulesPanel
 from gui.avoidance_editor import AvoidanceEditor
-from gui.layout_panel import LayoutPanel
 from gui.outline_editor import OutlineEditor
-from gui.export_dialog import ExportDialog
+
+from generators.plate_generator import (
+    generate_plate, PLATE_VARIANT_ANSI, PLATE_VARIANT_7U_ENTER, PLATE_VARIANT_UNIVERSAL,
+)
+from generators.foam_generator import generate_foam_layer
+
+
+# ── Step Names ──────────────────────────────────────────────────────
+STEP_NAMES = ["导入与解析", "智能避空配置", "配列与微调", "一键导出"]
+STEP_COUNT = len(STEP_NAMES)
 
 
 @dataclass
 class AppState:
-    """Application state for save/load."""
     pcb_data: Optional[PCBData] = None
-    rule_set: FootprintRuleSet = field(default_factory=FootprintRuleSet)
-    layout_config: Optional[LayoutConfig] = None
-    layer_config: LayerConfigSet = field(default_factory=lambda: LayerConfigSet(layers=DEFAULT_LAYERS))
+    rule_set: FootprintRuleSet = field(default_factory=FootprintRuleSet.get_default_rules)
+    layout_config: LayoutConfig = field(default_factory=LayoutConfig)
+    layer_config: LayerConfigSet = field(default_factory=lambda: LayerConfigSet(layers=list(DEFAULT_LAYERS)))
     avoidance_polygons: list[AvoidancePolygon] = field(default_factory=list)
     project_path: Optional[str] = None
     modified: bool = False
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  MainWindow
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 class MainWindow(QMainWindow):
-    """Main application window for Keyboard PCB Tool."""
-
     def __init__(self):
         super().__init__()
-
-        # App state
         self.state = AppState()
+        self._current_step = 0
 
-        # Main components
-        self.canvas: Optional[PcbCanvas] = None
-        self.footprint_panel: Optional[FootprintRulesPanel] = None
-        self.avoidance_panel: Optional[AvoidanceEditor] = None
-        self.layout_panel: Optional[LayoutPanel] = None
-        self.outline_panel: Optional[OutlineEditor] = None
-        self.export_dialog: Optional[ExportDialog] = None
-
-        # Toolbar mode button group
-        self.mode_button_group: Optional[QButtonGroup] = None
-
-        # Status bar labels
-        self.status_mode: Optional[QLabel] = None
-        self.status_cursor: Optional[QLabel] = None
-        self.status_switches: Optional[QLabel] = None
-        self.status_zoom: Optional[QLabel] = None
+        # Panels (created lazily per step)
+        self._avoidance_panel: Optional[AvoidanceEditor] = None
+        self._outline_panel: Optional[OutlineEditor] = None
 
         self._init_ui()
         self._create_menu_bar()
-        self._create_toolbar()
         self._create_status_bar()
+        self._goto_step(0)
 
+    # ── UI scaffold ─────────────────────────────────────────────────
     def _init_ui(self):
-        """Initialize the main window UI layout."""
-        self.setWindowTitle("Keyboard PCB Tool")
+        self.setWindowTitle("键盘PCB工具")
         self.resize(1400, 900)
 
-        # Central widget: PCB canvas
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        main_layout.setSpacing(8)
+
+        # Left: PCB canvas (always visible)
         self.canvas = PcbCanvas(self)
-        self.setCentralWidget(self.canvas)
+        self.canvas.setMinimumWidth(600)
+        main_layout.addWidget(self.canvas, stretch=3)
 
         # Connect canvas signals
-        self.canvas.signal_component_clicked.connect(self._on_component_clicked)
-        self.canvas.signal_cursor_position.connect(self._on_cursor_position_changed)
-        self.canvas.signal_zoom_changed.connect(self._on_zoom_changed)
+        self.canvas.signal_cursor_position.connect(self._on_cursor)
+        self.canvas.signal_zoom_changed.connect(self._on_zoom)
         self.canvas.signal_avoidance_created.connect(self._on_avoidance_created)
         self.canvas.signal_hole_placed.connect(self._on_hole_placed)
         self.canvas.signal_outline_point_added.connect(self._on_outline_point_added)
 
-        # Right dock with tabbed panels
-        self._create_right_dock()
+        # Right: stacked step panels
+        right_layout = QVBoxLayout()
+        right_layout.setSpacing(6)
 
-    def _create_right_dock(self):
-        """Create the right dock widget with tabbed panels."""
-        dock = QDockWidget("Panels", self)
-        dock.setFeatures(QDockWidget.NoDockWidgetFeatures)  # Fixed position
+        # Step indicator
+        self._step_label = QLabel()
+        self._step_label.setFont(QFont("Microsoft YaHei", 14, QFont.Bold))
+        self._step_label.setAlignment(Qt.AlignCenter)
+        right_layout.addWidget(self._step_label)
 
-        # Tab widget
-        tab_widget = QTabWidget()
-        tab_widget.setTabPosition(QTabWidget.North)
-        tab_widget.setDocumentMode(True)
+        # Step progress dots
+        self._progress_dots = QLabel()
+        self._progress_dots.setAlignment(Qt.AlignCenter)
+        right_layout.addWidget(self._progress_dots)
 
-        # Tab 1: Footprint Rules
-        self.footprint_panel = FootprintRulesPanel(parent=self)
-        self.footprint_panel.rules_applied.connect(self._on_rules_applied)
-        tab_widget.addTab(self.footprint_panel, "Footprint Rules")
+        # Stacked panels
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._create_step1_import())
+        self._stack.addWidget(self._create_step2_avoidance())
+        self._stack.addWidget(self._create_step3_layout())
+        self._stack.addWidget(self._create_step4_export())
+        right_layout.addWidget(self._stack, stretch=1)
 
-        # Tab 2: Avoidance Editor
-        self.avoidance_panel = AvoidanceEditor(parent=self)
-        self.avoidance_panel.polygon_confirmed.connect(self._on_avoidance_confirmed)
-        self.avoidance_panel.polygon_deleted.connect(self._on_avoidance_deleted)
-        self.avoidance_panel.draw_mode_requested.connect(self._on_draw_mode_requested)
-        tab_widget.addTab(self.avoidance_panel, "Avoidance")
+        # Navigation buttons
+        nav_layout = QHBoxLayout()
+        self._btn_prev = QPushButton("上一步")
+        self._btn_prev.clicked.connect(self._prev_step)
+        self._btn_next = QPushButton("下一步")
+        self._btn_next.clicked.connect(self._next_step)
+        nav_layout.addWidget(self._btn_prev)
+        nav_layout.addStretch()
+        nav_layout.addWidget(self._btn_next)
+        right_layout.addLayout(nav_layout)
 
-        # Tab 3: Layout Groups
-        self.layout_panel = LayoutPanel(parent=self)
-        self.layout_panel.layout_changed.connect(self._on_layout_changed)
-        tab_widget.addTab(self.layout_panel, "Layout")
+        right_widget = QWidget()
+        right_widget.setLayout(right_layout)
+        right_widget.setMinimumWidth(380)
+        right_widget.setMaximumWidth(480)
+        main_layout.addWidget(right_widget, stretch=1)
 
-        # Tab 4: Outline & Holes
-        self.outline_panel = OutlineEditor(parent=self)
-        self.outline_panel.outline_changed.connect(self._on_outline_changed)
-        self.outline_panel.hole_added.connect(self._on_hole_added)
-        self.outline_panel.hole_removed.connect(self._on_hole_removed)
-        self.outline_panel.draw_outline_requested.connect(
+    # ── Step 1: Import & Parse ──────────────────────────────────────
+    def _create_step1_import(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(12)
+
+        # Import button
+        import_group = QGroupBox("导入PCB文件")
+        ig_layout = QVBoxLayout(import_group)
+        self._btn_import = QPushButton("打开 Altium ASCII .PcbDoc 文件")
+        self._btn_import.setMinimumHeight(48)
+        self._btn_import.setStyleSheet("font-size: 14px;")
+        self._btn_import.clicked.connect(self._open_pcb_file)
+        ig_layout.addWidget(self._btn_import)
+        layout.addWidget(import_group)
+
+        # Classification results
+        result_group = QGroupBox("元件识别结果")
+        rg_layout = QGridLayout(result_group)
+        self._lbl_switches = QLabel("轴体: -")
+        self._lbl_leds = QLabel("LED: -")
+        self._lbl_ics = QLabel("IC: -")
+        self._lbl_mech = QLabel("机械件: -")
+        self._lbl_total = QLabel("总计: -")
+        for i, lbl in enumerate([self._lbl_switches, self._lbl_leds, self._lbl_ics, self._lbl_mech, self._lbl_total]):
+            lbl.setStyleSheet("font-size: 13px; padding: 4px;")
+            rg_layout.addWidget(lbl, i // 2, i % 2)
+        layout.addWidget(result_group)
+
+        # Board info
+        info_group = QGroupBox("板框信息")
+        info_layout = QVBoxLayout(info_group)
+        self._lbl_outline = QLabel("未检测到板框")
+        self._lbl_outline.setStyleSheet("color: gray;")
+        info_layout.addWidget(self._lbl_outline)
+        layout.addWidget(info_group)
+
+        layout.addStretch()
+        return panel
+
+    # ── Step 2: Avoidance & Canvas ──────────────────────────────────
+    def _create_step2_avoidance(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(8)
+
+        # Avoidance editor
+        self._avoidance_panel = AvoidanceEditor(parent=self)
+        self._avoidance_panel.polygon_confirmed.connect(self._on_avoidance_confirmed)
+        self._avoidance_panel.polygon_deleted.connect(self._on_avoidance_deleted)
+        self._avoidance_panel.draw_mode_requested.connect(self._on_draw_mode_requested)
+        layout.addWidget(self._avoidance_panel)
+
+        # Outline editor (compact)
+        outline_group = QGroupBox("板框与螺丝孔")
+        ol_layout = QVBoxLayout(outline_group)
+        self._outline_panel = OutlineEditor(parent=self)
+        self._outline_panel.outline_changed.connect(self._on_outline_changed)
+        self._outline_panel.hole_added.connect(self._on_hole_added)
+        self._outline_panel.hole_removed.connect(self._on_hole_removed)
+        self._outline_panel.draw_outline_requested.connect(
             lambda: self.canvas.set_interaction_mode(MODE_DRAW_OUTLINE)
         )
-        self.outline_panel.place_hole_requested.connect(
+        self._outline_panel.place_hole_requested.connect(
             lambda: self.canvas.set_interaction_mode(MODE_PLACE_HOLE)
         )
-        tab_widget.addTab(self.outline_panel, "Outline")
+        ol_layout.addWidget(self._outline_panel)
+        layout.addWidget(outline_group)
 
-        # Tab 5: Export
-        export_tab = QWidget()
-        export_layout = QVBoxLayout(export_tab)
-        export_label = QLabel("Export functionality available via File → Export DXF")
-        export_label.setWordWrap(True)
-        export_label.setStyleSheet("color: gray; padding: 20px;")
-        export_layout.addWidget(export_label)
-        tab_widget.addTab(export_tab, "Export")
+        return panel
 
-        # Track tab changes for mode switching
-        tab_widget.currentChanged.connect(self._on_tab_changed)
+    # ── Step 3: Layout & Fine-tune ──────────────────────────────────
+    def _create_step3_layout(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(12)
 
-        dock.setWidget(tab_widget)
-        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        # Detected template
+        tpl_group = QGroupBox("检测到的配列模板")
+        tpl_layout = QVBoxLayout(tpl_group)
+        self._lbl_template = QLabel("请先导入PCB并识别轴体")
+        self._lbl_template.setStyleSheet("color: gray; font-size: 13px;")
+        tpl_layout.addWidget(self._lbl_template)
 
+        # Template selector
+        tpl_sel_layout = QHBoxLayout()
+        tpl_sel_layout.addWidget(QLabel("选择模板:"))
+        self._template_combo = QComboBox()
+        self._template_combo.currentIndexChanged.connect(self._on_template_changed)
+        tpl_sel_layout.addWidget(self._template_combo)
+        tpl_layout.addLayout(tpl_sel_layout)
+
+        layout.addWidget(tpl_group)
+        self._detected_templates: list[LayoutTemplate] = []
+
+        # Split options
+        split_group = QGroupBox("分裂选项微调")
+        self._split_layout = QGridLayout(split_group)
+        self._split_layout.setSpacing(8)
+        self._split_combos: dict[str, QComboBox] = {}
+        self._create_split_option("回车", "enter", ["标准回车", "七字回车 (7U)"])
+        self._create_split_option("左Shift", "lshift", ["标准 Shift (2.25U)", "分裂 Shift (1.25U + 1U)"])
+        self._create_split_option("右Shift", "rshift", ["标准 Shift (2.75U)", "分裂 Shift (1.75U + 1U)"])
+        self._create_split_option("Backspace", "backspace", ["标准 Backspace (2U)", "分裂 Backspace (1.5U + 1U)"])
+        self._create_split_option("空格", "spacebar", ["6.25U 空格", "7U 空格", "分裂空格"])
+        layout.addWidget(split_group)
+
+        # Apply button
+        self._btn_apply_layout = QPushButton("应用配列配置")
+        self._btn_apply_layout.clicked.connect(self._apply_layout_config)
+        layout.addWidget(self._btn_apply_layout)
+
+        layout.addStretch()
+        return panel
+
+    def _create_split_option(self, label: str, key: str, options: list[str]):
+        row = self._split_layout.rowCount()
+        self._split_layout.addWidget(QLabel(f"{label}:"), row, 0)
+        combo = QComboBox()
+        combo.addItems(options)
+        self._split_combos[key] = combo
+        self._split_layout.addWidget(combo, row, 1)
+
+    # ── Step 4: Export ──────────────────────────────────────────────
+    def _create_step4_export(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(12)
+
+        # Layer selection
+        layer_group = QGroupBox("选择导出图层")
+        layer_layout = QVBoxLayout(layer_group)
+        self._layer_checks: dict[str, QCheckBox] = {}
+        for layer in DEFAULT_LAYERS:
+            cb = QCheckBox(f"{layer.name_cn} ({layer.name}) — {layer.thickness}mm")
+            cb.setChecked(layer.name == "plate")  # Default: only plate checked
+            self._layer_checks[layer.name] = cb
+            layer_layout.addWidget(cb)
+
+        btn_row = QHBoxLayout()
+        btn_sel_all = QPushButton("全选")
+        btn_sel_all.clicked.connect(lambda: [cb.setChecked(True) for cb in self._layer_checks.values()])
+        btn_desel = QPushButton("取消全选")
+        btn_desel.clicked.connect(lambda: [cb.setChecked(False) for cb in self._layer_checks.values()])
+        btn_row.addWidget(btn_sel_all)
+        btn_row.addWidget(btn_desel)
+        btn_row.addStretch()
+        layer_layout.addLayout(btn_row)
+        layout.addWidget(layer_group)
+
+        # Output settings
+        out_group = QGroupBox("输出设置")
+        out_layout = QGridLayout(out_group)
+
+        out_layout.addWidget(QLabel("输出目录:"), 0, 0)
+        self._output_dir = QLineEdit()
+        self._output_dir.setPlaceholderText("选择输出目录...")
+        out_layout.addWidget(self._output_dir, 0, 1)
+        btn_browse = QPushButton("浏览...")
+        btn_browse.clicked.connect(self._browse_output_dir)
+        out_layout.addWidget(btn_browse, 0, 2)
+
+        out_layout.addWidget(QLabel("项目名称:"), 1, 0)
+        self._project_name = QLineEdit("keyboard")
+        out_layout.addWidget(self._project_name, 1, 1, 1, 2)
+
+        out_layout.addWidget(QLabel("文件名模板:"), 2, 0)
+        self._file_pattern = QLineEdit("{project}_{layer}_{variant}.dxf")
+        self._file_pattern.setToolTip("{project}=项目名 {layer}=层名 {variant}=变体")
+        out_layout.addWidget(self._file_pattern, 2, 1, 1, 2)
+
+        layout.addWidget(out_group)
+
+        # Export button
+        self._btn_export = QPushButton("导出 DXF")
+        self._btn_export.setMinimumHeight(48)
+        self._btn_export.setStyleSheet("font-size: 14px; font-weight: bold;")
+        self._btn_export.clicked.connect(self._export_dxf)
+        layout.addWidget(self._btn_export)
+
+        # Progress
+        self._export_progress = QProgressBar()
+        self._export_progress.setVisible(False)
+        layout.addWidget(self._export_progress)
+
+        self._export_status = QLabel()
+        self._export_status.setVisible(False)
+        layout.addWidget(self._export_status)
+
+        layout.addStretch()
+        return panel
+
+    # ── Menu bar ────────────────────────────────────────────────────
     def _create_menu_bar(self):
-        """Create the menu bar."""
         menubar = self.menuBar()
 
-        # File Menu
-        file_menu = menubar.addMenu("&File")
-
-        open_pcb_action = QAction("Open PCB...", self)
-        open_pcb_action.setShortcut(QKeySequence.Open)
-        open_pcb_action.setStatusTip("Open an Altium ASCII .PcbDoc file")
-        open_pcb_action.triggered.connect(self.open_pcb_file)
-        file_menu.addAction(open_pcb_action)
+        file_menu = menubar.addMenu("文件(&F)")
+        open_act = file_menu.addAction("打开PCB...")
+        open_act.setShortcut(QKeySequence.Open)
+        open_act.triggered.connect(self._open_pcb_file)
 
         file_menu.addSeparator()
 
-        save_project_action = QAction("Save Project...", self)
-        save_project_action.setShortcut(QKeySequence.Save)
-        save_project_action.setStatusTip("Save project state to JSON")
-        save_project_action.triggered.connect(self.save_project)
-        file_menu.addAction(save_project_action)
+        save_act = file_menu.addAction("保存项目...")
+        save_act.setShortcut(QKeySequence.Save)
+        save_act.triggered.connect(self._save_project)
 
-        load_project_action = QAction("Load Project...", self)
-        load_project_action.setStatusTip("Load project state from JSON")
-        load_project_action.triggered.connect(self.load_project)
-        file_menu.addAction(load_project_action)
+        load_act = file_menu.addAction("加载项目...")
+        load_act.triggered.connect(self._load_project)
 
         file_menu.addSeparator()
 
-        export_dxf_action = QAction("Export DXF...", self)
-        export_dxf_action.setStatusTip("Export layers as DXF files")
-        export_dxf_action.triggered.connect(self.export_layers)
-        file_menu.addAction(export_dxf_action)
+        export_act = file_menu.addAction("导出DXF...")
+        export_act.triggered.connect(self._export_dxf)
 
         file_menu.addSeparator()
+        file_menu.addAction("退出", self.close)
 
-        exit_action = QAction("Exit", self)
-        exit_action.setShortcut(QKeySequence.Quit)
-        exit_action.setStatusTip("Exit application")
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
+        view_menu = menubar.addMenu("视图(&V)")
+        view_menu.addAction("适应内容", self.canvas.fit_to_content)
+        view_menu.addAction("放大", lambda: self.canvas._zoom(1.15))
+        view_menu.addAction("缩小", lambda: self.canvas._zoom(1.0 / 1.15))
 
-        # Edit Menu
-        edit_menu = menubar.addMenu("&Edit")
+        help_menu = menubar.addMenu("帮助(&H)")
+        help_menu.addAction("关于", self._show_about)
 
-        undo_action = QAction("Undo", self)
-        undo_action.setShortcut(QKeySequence.Undo)
-        undo_action.setEnabled(False)  # TODO: Implement undo/redo
-        edit_menu.addAction(undo_action)
-
-        redo_action = QAction("Redo", self)
-        redo_action.setShortcut(QKeySequence.Redo)
-        redo_action.setEnabled(False)  # TODO: Implement undo/redo
-        edit_menu.addAction(redo_action)
-
-        edit_menu.addSeparator()
-
-        prefs_action = QAction("Preferences...", self)
-        prefs_action.setStatusTip("Open application preferences")
-        prefs_action.setEnabled(False)  # TODO: Implement preferences
-        edit_menu.addAction(prefs_action)
-
-        # View Menu
-        view_menu = menubar.addMenu("&View")
-
-        zoom_in_action = QAction("Zoom In", self)
-        zoom_in_action.setShortcut(QKeySequence.ZoomIn)
-        zoom_in_action.triggered.connect(self.canvas.fit_to_content)
-        view_menu.addAction(zoom_in_action)
-
-        zoom_out_action = QAction("Zoom Out", self)
-        zoom_out_action.setShortcut(QKeySequence.ZoomOut)
-        zoom_out_action.triggered.connect(self._zoom_out)
-        view_menu.addAction(zoom_out_action)
-
-        fit_action = QAction("Fit to Content", self)
-        fit_action.setShortcut(QKeySequence("Ctrl+F"))
-        fit_action.triggered.connect(self.canvas.fit_to_content)
-        view_menu.addAction(fit_action)
-
-        view_menu.addSeparator()
-
-        toggle_grid_action = QAction("Toggle Grid", self)
-        toggle_grid_action.setShortcut(QKeySequence("Ctrl+G"))
-        toggle_grid_action.setEnabled(False)  # TODO: Implement grid toggle
-        view_menu.addAction(toggle_grid_action)
-
-        # Help Menu
-        help_menu = menubar.addMenu("&Help")
-
-        about_action = QAction("About", self)
-        about_action.setStatusTip("About this application")
-        about_action.triggered.connect(self._show_about)
-        help_menu.addAction(about_action)
-
-    def _create_toolbar(self):
-        """Create the main toolbar."""
-        toolbar = QToolBar("Main Toolbar", self)
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
-
-        # File actions
-        open_action = QAction("Open", self)
-        open_action.setStatusTip("Open PCB file")
-        open_action.triggered.connect(self.open_pcb_file)
-        toolbar.addAction(open_action)
-
-        save_action = QAction("Save", self)
-        save_action.setStatusTip("Save project")
-        save_action.triggered.connect(self.save_project)
-        toolbar.addAction(save_action)
-
-        toolbar.addSeparator()
-
-        # Mode selection (radio-button style)
-        self.mode_button_group = QButtonGroup(self)
-
-        select_btn = QToolButton(self)
-        select_btn.setText("Select")
-        select_btn.setCheckable(True)
-        select_btn.setChecked(True)
-        select_btn.setToolTip("Select components (default)")
-        select_btn.clicked.connect(lambda: self.canvas.set_interaction_mode(MODE_SELECT))
-        self.mode_button_group.addButton(select_btn, 0)
-        toolbar.addWidget(select_btn)
-
-        draw_rect_btn = QToolButton(self)
-        draw_rect_btn.setText("DrawRect")
-        draw_rect_btn.setCheckable(True)
-        draw_rect_btn.setToolTip("Draw rectangular avoidance zone")
-        draw_rect_btn.clicked.connect(lambda: self.canvas.set_interaction_mode(MODE_DRAW_RECT))
-        self.mode_button_group.addButton(draw_rect_btn, 1)
-        toolbar.addWidget(draw_rect_btn)
-
-        draw_poly_btn = QToolButton(self)
-        draw_poly_btn.setText("DrawPoly")
-        draw_poly_btn.setCheckable(True)
-        draw_poly_btn.setToolTip("Draw polygon avoidance zone")
-        draw_poly_btn.clicked.connect(lambda: self.canvas.set_interaction_mode(MODE_DRAW_POLYGON))
-        self.mode_button_group.addButton(draw_poly_btn, 2)
-        toolbar.addWidget(draw_poly_btn)
-
-        place_hole_btn = QToolButton(self)
-        place_hole_btn.setText("PlaceHole")
-        place_hole_btn.setCheckable(True)
-        place_hole_btn.setToolTip("Place screw hole")
-        place_hole_btn.clicked.connect(lambda: self.canvas.set_interaction_mode(MODE_PLACE_HOLE))
-        self.mode_button_group.addButton(place_hole_btn, 3)
-        toolbar.addWidget(place_hole_btn)
-
-        draw_outline_btn = QToolButton(self)
-        draw_outline_btn.setText("DrawOutline")
-        draw_outline_btn.setCheckable(True)
-        draw_outline_btn.setToolTip("Draw board outline")
-        draw_outline_btn.clicked.connect(lambda: self.canvas.set_interaction_mode(MODE_DRAW_OUTLINE))
-        self.mode_button_group.addButton(draw_outline_btn, 4)
-        toolbar.addWidget(draw_outline_btn)
-
-        toolbar.addSeparator()
-
-        # View actions
-        fit_action = QAction("Fit", self)
-        fit_action.setStatusTip("Fit view to content")
-        fit_action.triggered.connect(self.canvas.fit_to_content)
-        toolbar.addAction(fit_action)
-
-        zoom_in_action = QAction("ZoomIn", self)
-        zoom_in_action.setStatusTip("Zoom in")
-        zoom_in_action.triggered.connect(lambda: self.canvas._zoom(1.15))
-        toolbar.addAction(zoom_in_action)
-
-        zoom_out_action = QAction("ZoomOut", self)
-        zoom_out_action.setStatusTip("Zoom out")
-        zoom_out_action.triggered.connect(lambda: self.canvas._zoom(1.0/1.15))
-        toolbar.addAction(zoom_out_action)
-
+    # ── Status bar ──────────────────────────────────────────────────
     def _create_status_bar(self):
-        """Create the status bar."""
-        status_bar = QStatusBar()
-        self.setStatusBar(status_bar)
+        sb = QStatusBar()
+        self.setStatusBar(sb)
+        self._status_mode = QLabel("模式: 选择")
+        sb.addWidget(self._status_mode)
+        self._status_cursor = QLabel("光标: (0.0, 0.0)mm")
+        sb.addWidget(self._status_cursor)
+        self._status_switches = QLabel("轴体: 0")
+        sb.addWidget(self._status_switches)
+        self._status_zoom = QLabel("缩放: 1.0x")
+        sb.addPermanentWidget(self._status_zoom)
 
-        # Mode indicator
-        self.status_mode = QLabel("Mode: Select")
-        status_bar.addWidget(self.status_mode)
+    # ── Step navigation ─────────────────────────────────────────────
+    def _goto_step(self, step: int):
+        self._current_step = max(0, min(step, STEP_COUNT - 1))
+        self._stack.setCurrentIndex(self._current_step)
 
-        # Cursor position
-        self.status_cursor = QLabel("Cursor: (0.0, 0.0)mm")
-        status_bar.addWidget(self.status_cursor)
+        # Update step label
+        name = STEP_NAMES[self._current_step]
+        self._step_label.setText(f"步骤 {self._current_step + 1}/{STEP_COUNT}: {name}")
 
-        # Switch count
-        self.status_switches = QLabel("Switches: 0/0")
-        status_bar.addWidget(self.status_switches)
-
-        # Zoom level
-        self.status_zoom = QLabel("Zoom: 1.0x")
-        status_bar.addPermanentWidget(self.status_zoom)
-
-    # File operations
-
-    def open_pcb_file(self):
-        """Open a PCB file through file dialog."""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open PCB File",
-            "",
-            "Altium PCB Files (*.PcbDoc *.pcb);;All Files (*)"
+        # Update progress dots
+        dots = "  ".join(
+            f"{'●' if i == self._current_step else '○'}"
+            for i in range(STEP_COUNT)
         )
+        self._progress_dots.setText(dots)
+        self._progress_dots.setStyleSheet("font-size: 16px; color: #4a9eff;")
 
-        if not file_path:
+        # Update nav buttons
+        self._btn_prev.setEnabled(self._current_step > 0)
+        self._btn_next.setText("完成" if self._current_step == STEP_COUNT - 1 else "下一步")
+
+        # Step-specific setup
+        if self._current_step == 2:
+            self._update_layout_template_info()
+
+    def _next_step(self):
+        if self._current_step == STEP_COUNT - 1:
+            self._export_dxf()
+        else:
+            self._goto_step(self._current_step + 1)
+
+    def _prev_step(self):
+        self._goto_step(self._current_step - 1)
+
+    # ── PCB Import ──────────────────────────────────────────────────
+    def _open_pcb_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "打开PCB文件", "",
+            "Altium PCB文件 (*.PcbDoc *.pcb);;所有文件 (*)"
+        )
+        if not path:
             return
 
-        # Validate ASCII format
-        is_valid, error_msg = validate_ascii_pcb(file_path)
+        is_valid, err = validate_ascii_pcb(path)
         if not is_valid:
-            QMessageBox.critical(
-                self,
-                "Invalid PCB File",
-                f"Failed to open PCB file:\n\n{error_msg}"
-            )
+            QMessageBox.critical(self, "无效的PCB文件", f"打开失败:\n\n{err}")
             return
 
-        # Parse PCB file
         try:
             parser = AltiumASCIIParser()
-            pcb = parser.parse(file_path)
-            pcb.source_file = file_path
+            pcb = parser.parse(path)
+            pcb.source_file = path
         except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Parse Error",
-                f"Failed to parse PCB file:\n\n{str(e)}"
-            )
+            QMessageBox.critical(self, "解析错误", f"解析失败:\n\n{e}")
             return
 
-        # Update state
+        # Classify components
+        self.state.rule_set.classify_components(pcb.components)
         self.state.pcb_data = pcb
         self.state.modified = True
 
-        # Distribute data to panels
-        self._on_pcb_loaded(pcb)
+        # Auto-detect avoidance for ICs
+        suspected = detect_suspected_avoidance(pcb.components)
+        if suspected:
+            self.state.avoidance_polygons.extend(suspected)
+            if self._avoidance_panel:
+                self._avoidance_panel.set_polygons(self.state.avoidance_polygons)
 
-    def save_project(self):
-        """Save project state to JSON file."""
-        if not self.state.pcb_data:
-            QMessageBox.warning(
-                self,
-                "No Data",
-                "No PCB data loaded. Please open a PCB file first."
-            )
-            return
-
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Project",
-            self.state.project_path or "",
-            "Project Files (*.json);;All Files (*)"
-        )
-
-        if not file_path:
-            return
-
-        try:
-            # Prepare save data
-            save_data = {
-                "pcb_source_file": self.state.pcb_data.source_file,
-                "rule_set": self.state.rule_set.to_dict() if hasattr(self.state.rule_set, 'to_dict') else {},
-                "layout_config": self.state.layout_config.to_dict() if self.state.layout_config else None,
-                "layer_config": self.state.layer_config.to_dict() if hasattr(self.state.layer_config, 'to_dict') else {},
-                "avoidance_polygons": [p.to_dict() for p in self.state.avoidance_polygons if hasattr(p, 'to_dict')],
-                "manual_outline": self.state.pcb_data.board_outline.to_dict() if self.state.pcb_data.board_outline else None,
-                "manual_holes": [h.to_dict() for h in self.state.pcb_data.screw_holes if hasattr(h, 'to_dict')]
-            }
-
-            # Write to file
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(save_data, f, indent=2, ensure_ascii=False)
-
-            self.state.project_path = file_path
-            self.state.modified = False
-
-            QMessageBox.information(
-                self,
-                "Project Saved",
-                f"Project saved successfully to:\n{file_path}"
-            )
-
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Save Failed",
-                f"Failed to save project:\n\n{str(e)}"
-            )
-
-    def load_project(self):
-        """Load project state from JSON file."""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Load Project",
-            "",
-            "Project Files (*.json);;All Files (*)"
-        )
-
-        if not file_path:
-            return
-
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            # Restore state
-            self.state.project_path = file_path
-
-            # Note: Full implementation would deserialize all state objects
-            # For now, just show a message
-            QMessageBox.information(
-                self,
-                "Project Loaded",
-                f"Project loaded from:\n{file_path}\n\n(Note: Full deserialization not yet implemented)"
-            )
-
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Load Failed",
-                f"Failed to load project:\n\n{str(e)}"
-            )
-
-    def export_layers(self):
-        """Open export dialog for DXF export."""
-        if not self.state.pcb_data:
-            QMessageBox.warning(
-                self,
-                "No Data",
-                "No PCB data loaded. Please open a PCB file first."
-            )
-            return
-
-        # Create export dialog
-        dialog = ExportDialog(
-            pcb_data=self.state.pcb_data,
-            layout_config=self.state.layout_config,
-            layer_config_set=self.state.layer_config,
-            avoidance_polygons=self.state.avoidance_polygons,
-            parent=self
-        )
-
-        dialog.exec_()
-
-    # Panel signal handlers
-
-    def _on_pcb_loaded(self, pcb: PCBData):
-        """Distribute loaded PCB data to all panels."""
-        # Update canvas
+        # Distribute data
         self.canvas.set_pcb_data(pcb)
+        self.canvas.fit_to_content()
 
-        # Update footprint rules panel
-        if self.footprint_panel:
-            self.footprint_panel.set_pcb_data(pcb)
+        if self._outline_panel:
+            self._outline_panel.set_pcb_data(pcb)
 
-        # Update outline panel
-        if self.outline_panel:
-            self.outline_panel.set_pcb_data(pcb)
+        # Update Step 1 results
+        self._update_classification_display()
 
-        # Update status bar
-        self._update_status_bar()
+        # Switch to step 1 to show results
+        self._goto_step(0)
 
-    def _on_rules_applied(self, rule_set: FootprintRuleSet):
-        """Handle rules applied event."""
-        self.state.rule_set = rule_set
+    def _update_classification_display(self):
+        if not self.state.pcb_data:
+            return
+        comps = self.state.pcb_data.components
+        switches = sum(1 for c in comps if c.classification == "switch")
+        leds = sum(1 for c in comps if c.classification == "led")
+        ics = sum(1 for c in comps if c.classification == "ic")
+        mech = sum(1 for c in comps if c.classification == "mechanical")
+        total = len(comps)
 
-        # Re-render canvas with new classifications
-        if self.state.pcb_data:
-            self.canvas.set_pcb_data(self.state.pcb_data)
+        self._lbl_switches.setText(f"轴体: {switches}")
+        self._lbl_switches.setStyleSheet("color: #64c864; font-size: 13px; font-weight: bold;")
+        self._lbl_leds.setText(f"LED: {leds}")
+        self._lbl_leds.setStyleSheet("color: #ffa500; font-size: 13px;")
+        self._lbl_ics.setText(f"IC: {ics}")
+        self._lbl_ics.setStyleSheet("color: #ff6464; font-size: 13px;")
+        self._lbl_mech.setText(f"机械件: {mech}")
+        self._lbl_mech.setStyleSheet("color: #6496ff; font-size: 13px;")
+        self._lbl_total.setText(f"总计: {total}")
 
-        # Auto-detect suspected ICs for avoidance
-        if self.state.pcb_data:
-            suspected = detect_suspected_avoidance(self.state.pcb_data.components)
-            if suspected and self.avoidance_panel:
-                for poly in suspected:
-                    self.avoidance_panel.add_polygon(poly)
+        outline = self.state.pcb_data.board_outline
+        if outline and outline.is_valid():
+            self._lbl_outline.setText(f"板框: {len(outline.vertices)} 个顶点")
+            self._lbl_outline.setStyleSheet("color: white;")
+        else:
+            self._lbl_outline.setText("未检测到板框（可在步骤2手动绘制）")
+            self._lbl_outline.setStyleSheet("color: gray;")
 
-        # Update layout panel with classified switches
-        if self.layout_panel and self.state.pcb_data:
-            switches = self.state.pcb_data.get_switches()
-            self.layout_panel.set_switches(switches)
+        self._status_switches.setText(f"轴体: {switches}")
 
-        self._update_status_bar()
+    # ── Step 3: Layout ──────────────────────────────────────────────
+    def _update_layout_template_info(self):
+        if not self.state.pcb_data:
+            self._lbl_template.setText("请先导入PCB并识别轴体")
+            return
+
+        switches = self.state.pcb_data.get_switches()
+        count = len(switches)
+        if count == 0:
+            self._lbl_template.setText("未检测到轴体")
+            return
+
+        # Detect templates using layout_hints
+        self._detected_templates = detect_layout_templates(switches)
+        if not self._detected_templates:
+            self._lbl_template.setText(f"检测到 {count} 个轴体，无法识别配列模板")
+            return
+
+        # Find recommended template
+        recommended = next((t for t in self._detected_templates if t.recommended), self._detected_templates[0])
+        self._lbl_template.setText(
+            f"检测到 {count} 个轴体，推荐模板: {recommended.name}"
+        )
+        self._lbl_template.setStyleSheet("color: #4a9eff; font-size: 13px; font-weight: bold;")
+
+        # Populate template combo
+        self._template_combo.blockSignals(True)
+        self._template_combo.clear()
+        for t in self._detected_templates:
+            self._template_combo.addItem(f"{t.name} — {t.description}")
+        self._template_combo.setCurrentIndex(self._detected_templates.index(recommended))
+        self._template_combo.blockSignals(False)
+
+        # Update split options for the recommended template
+        self._apply_template_splits(recommended)
+
+    def _on_template_changed(self, index: int):
+        """Update split option combos when template selection changes."""
+        if 0 <= index < len(self._detected_templates):
+            self._apply_template_splits(self._detected_templates[index])
+
+    def _apply_template_splits(self, template: LayoutTemplate):
+        """Update split option combos to match the selected template's options."""
+        key_map = {"enter": "enter", "lshift": "lshift", "rshift": "rshift",
+                   "backspace": "backspace", "spacebar": "spacebar"}
+        for opt in template.split_options:
+            key = key_map.get(opt.key)
+            if key and key in self._split_combos:
+                combo = self._split_combos[key]
+                combo.blockSignals(True)
+                combo.clear()
+                combo.addItems(opt.options)
+                if opt.recommended < len(opt.options):
+                    combo.setCurrentIndex(opt.recommended)
+                combo.blockSignals(False)
+
+    def _apply_layout_config(self):
+        """Build LayoutConfig from current split option selections."""
+        if not self._detected_templates:
+            QMessageBox.warning(self, "未检测模板", "请先导入PCB文件。")
+            return
+
+        tpl_idx = self._template_combo.currentIndex()
+        if tpl_idx < 0 or tpl_idx >= len(self._detected_templates):
+            return
+        template = self._detected_templates[tpl_idx]
+
+        groups = []
+        for split_opt in template.split_options:
+            combo = self._split_combos.get(split_opt.key)
+            if not combo:
+                continue
+            sel_idx = combo.currentIndex()
+            opts = [LayoutOption(f"{split_opt.key}_{i}", name, []) for i, name in enumerate(split_opt.options)]
+            groups.append(LayoutGroup(
+                id=split_opt.key,
+                name=split_opt.label,
+                description=f"{split_opt.label}配列选择",
+                options=opts,
+                selected_option_id=opts[sel_idx].id if sel_idx < len(opts) else opts[0].id,
+            ))
+
+        self.state.layout_config = LayoutConfig(groups=groups)
+        self.state.modified = True
+
+        QMessageBox.information(self, "配列配置", f"已应用 {template.name} 配列配置。")
+
+    # ── Step 4: Export ──────────────────────────────────────────────
+    def _browse_output_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "选择输出目录", os.path.expanduser("~"))
+        if d:
+            self._output_dir.setText(d)
+
+    def _export_dxf(self):
+        if not self.state.pcb_data:
+            QMessageBox.warning(self, "没有数据", "请先导入PCB文件。")
+            return
+
+        selected = [name for name, cb in self._layer_checks.items() if cb.isChecked()]
+        if not selected:
+            QMessageBox.warning(self, "未选择图层", "请至少选择一个导出图层。")
+            return
+
+        output_dir = self._output_dir.text().strip()
+        if not output_dir or not os.path.isdir(output_dir):
+            QMessageBox.warning(self, "无效目录", "请选择有效的输出目录。")
+            return
+
+        project_name = self._project_name.text().strip() or "keyboard"
+        pattern = self._file_pattern.text().strip()
+
+        # Build variant list for plate
+        enter_idx = self._split_combos["enter"].currentIndex() if hasattr(self, '_split_combos') else 0
+        if enter_idx == 1:
+            plate_variants = [PLATE_VARIANT_7U_ENTER]
+        else:
+            plate_variants = [PLATE_VARIANT_ANSI]
+
+        tasks: list[tuple[str, str, str]] = []
+        for layer_name in selected:
+            if layer_name == "plate":
+                for v in plate_variants:
+                    suffix = {"ansi": "ansi", "7u_enter": "7u", "universal": "universal"}.get(v, v)
+                    fname = pattern.replace("{project}", project_name).replace("{layer}", layer_name).replace("{variant}", suffix)
+                    tasks.append((layer_name, v, os.path.join(output_dir, fname)))
+            else:
+                fname = pattern.replace("{project}", project_name).replace("{layer}", layer_name).replace("{variant}", "")
+                fname = fname.replace("__", "_")
+                tasks.append((layer_name, "", os.path.join(output_dir, fname)))
+
+        # Export
+        self._export_progress.setVisible(True)
+        self._export_status.setVisible(True)
+        self._export_progress.setMaximum(len(tasks))
+        success = 0
+        failed: list[tuple[str, str]] = []
+
+        for i, (layer_name, variant, out_path) in enumerate(tasks):
+            self._export_progress.setValue(i)
+            layer_cfg = self.state.layer_config.get(layer_name)
+            if not layer_cfg:
+                failed.append((layer_name, "配置未找到"))
+                continue
+
+            variant_label = f" ({variant})" if variant else ""
+            self._export_status.setText(f"正在导出: {layer_cfg.name_cn}{variant_label}")
+
+            try:
+                if layer_name == "plate":
+                    generate_plate(
+                        self.state.pcb_data,
+                        self.state.layout_config,
+                        layer_cfg,
+                        self.state.avoidance_polygons,
+                        out_path,
+                        plate_type=variant,
+                    )
+                else:
+                    generate_foam_layer(
+                        self.state.pcb_data,
+                        self.state.layout_config,
+                        layer_cfg,
+                        self.state.avoidance_polygons,
+                        out_path,
+                    )
+                success += 1
+            except Exception as e:
+                failed.append((layer_name, str(e)))
+
+        self._export_progress.setValue(len(tasks))
+        self._export_status.setText("导出完成")
+
+        if failed:
+            msg = f"导出 {success}/{len(tasks)} 成功。\n\n失败:\n" + "\n".join(f"  - {n}: {e}" for n, e in failed)
+            QMessageBox.warning(self, "导出完成（有错误）", msg)
+        else:
+            QMessageBox.information(self, "导出成功", f"成功导出 {success}/{len(tasks)} 个图层到:\n{output_dir}")
+
+        self._export_progress.setVisible(False)
+        self._export_status.setVisible(False)
+
+    # ── Canvas signal handlers ──────────────────────────────────────
+    def _on_cursor(self, x: float, y: float):
+        self._status_cursor.setText(f"光标: ({x:.1f}, {y:.1f})mm")
+
+    def _on_zoom(self, level: float):
+        self._status_zoom.setText(f"缩放: {level:.2f}x")
+
+    def _on_avoidance_created(self, vertices: list, source: str):
+        if self._avoidance_panel:
+            self._avoidance_panel.add_polygon_from_canvas(vertices, source)
+        self.state.modified = True
+
+    def _on_hole_placed(self, x: float, y: float):
+        if self._outline_panel:
+            self._outline_panel.add_hole(x, y)
+
+    def _on_outline_point_added(self, x: float, y: float):
+        if self._outline_panel:
+            self._outline_panel.add_outline_vertex(x, y)
 
     def _on_avoidance_confirmed(self, index: int):
-        """Handle avoidance polygon confirmed."""
         self.state.modified = True
 
     def _on_avoidance_deleted(self, index: int):
-        """Handle avoidance polygon deleted."""
-        self.state.modified = True
-
-    def _on_avoidance_created(self, vertices: list, source: str):
-        """Handle avoidance polygon created via canvas."""
-        if self.avoidance_panel:
-            self.avoidance_panel.add_polygon_from_canvas(vertices, source)
+        if 0 <= index < len(self.state.avoidance_polygons):
+            self.state.avoidance_polygons.pop(index)
         self.state.modified = True
 
     def _on_draw_mode_requested(self, mode: str):
-        """Handle draw mode requested from avoidance panel."""
         if mode == "rect":
             self.canvas.set_interaction_mode(MODE_DRAW_RECT)
         elif mode == "polygon":
             self.canvas.set_interaction_mode(MODE_DRAW_POLYGON)
-
-    def _on_layout_changed(self, layout_config: LayoutConfig):
-        """Handle layout configuration changed."""
-        self.state.layout_config = layout_config
-        self.state.modified = True
+        elif mode == "edit":
+            self.canvas.set_interaction_mode(MODE_SELECT)
 
     def _on_outline_changed(self, vertices: list, source: str):
-        """Handle board outline changed."""
         if self.state.pcb_data:
-            from models.pcb_data import BoardOutline
             self.state.pcb_data.board_outline = BoardOutline(vertices=vertices, source=source)
             self.canvas.set_pcb_data(self.state.pcb_data)
         self.state.modified = True
 
     def _on_hole_added(self, x: float, y: float, diameter: float):
-        """Handle screw hole added."""
         if self.state.pcb_data:
-            from models.pcb_data import ScrewHole
             hole = ScrewHole(x=x, y=y, diameter=diameter, source="manual")
             self.state.pcb_data.screw_holes.append(hole)
             self.canvas.set_pcb_data(self.state.pcb_data)
         self.state.modified = True
 
     def _on_hole_removed(self, index: int):
-        """Handle screw hole removed."""
         if self.state.pcb_data and 0 <= index < len(self.state.pcb_data.screw_holes):
             self.state.pcb_data.screw_holes.pop(index)
             self.canvas.set_pcb_data(self.state.pcb_data)
         self.state.modified = True
 
-    def _on_hole_placed(self, x: float, y: float):
-        """Handle hole placed via canvas."""
-        if self.outline_panel:
-            self.outline_panel.add_hole(x, y)
+    # ── Project save/load ───────────────────────────────────────────
+    def _save_project(self):
+        if not self.state.pcb_data:
+            QMessageBox.warning(self, "没有数据", "请先打开PCB文件。")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "保存项目", "", "项目文件 (*.json);;所有文件 (*)")
+        if not path:
+            return
+        try:
+            data = {
+                "pcb_source_file": self.state.pcb_data.source_file,
+                "rule_set": self.state.rule_set.to_dict(),
+                "layout_config": self.state.layout_config.to_dict(),
+                "layer_config": self.state.layer_config.to_dict(),
+                "avoidance_polygons": [p.to_dict() for p in self.state.avoidance_polygons],
+            }
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            self.state.project_path = path
+            self.state.modified = False
+            QMessageBox.information(self, "已保存", f"项目已保存到:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "保存失败", str(e))
 
-    def _on_outline_point_added(self, x: float, y: float):
-        """Handle outline point added via canvas."""
-        if self.outline_panel:
-            self.outline_panel.add_outline_vertex(x, y)
+    def _load_project(self):
+        path, _ = QFileDialog.getOpenFileName(self, "加载项目", "", "项目文件 (*.json);;所有文件 (*)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.state.project_path = path
+            QMessageBox.information(self, "已加载", f"项目已从:\n{path}\n\n加载成功（完整反序列化待实现）")
+        except Exception as e:
+            QMessageBox.critical(self, "加载失败", str(e))
 
-    def _on_tab_changed(self, index: int):
-        """Handle tab change event."""
-        # Auto-switch canvas mode based on tab
-        if index == 1:  # Avoidance tab
-            # Keep current mode or default to select
-            pass
-        elif index == 3:  # Outline tab
-            # Could auto-switch to draw outline mode
-            pass
-        else:
-            # Reset to select mode
-            if self.mode_button_group:
-                self.mode_button_group.button(0).setChecked(True)
-            self.canvas.set_interaction_mode(MODE_SELECT)
-
-    # Canvas signal handlers
-
-    def _on_component_clicked(self, ref: str):
-        """Handle component clicked on canvas."""
-        # Could show component details or highlight in panels
-        pass
-
-    def _on_cursor_position_changed(self, x: float, y: float):
-        """Handle cursor position changed."""
-        if self.status_cursor:
-            self.status_cursor.setText(f"Cursor: ({x:.1f}, {y:.1f})mm")
-
-    def _on_zoom_changed(self, zoom_level: float):
-        """Handle zoom level changed."""
-        if self.status_zoom:
-            self.status_zoom.setText(f"Zoom: {zoom_level:.2f}x")
-
-    # Helper methods
-
-    def _update_status_bar(self):
-        """Update status bar information."""
-        if self.status_switches and self.state.pcb_data:
-            switches = self.state.pcb_data.get_switches()
-            total = len(self.state.pcb_data.components)
-            self.status_switches.setText(f"Switches: {len(switches)}/{total}")
-
-    def _zoom_out(self):
-        """Zoom out the canvas."""
-        if self.canvas:
-            self.canvas._zoom(1.0 / 1.15)
-
+    # ── About ───────────────────────────────────────────────────────
     def _show_about(self):
-        """Show about dialog."""
         QMessageBox.about(
             self,
-            "About Keyboard PCB Tool",
-            "<h3>Keyboard PCB Tool</h3>"
-            "<p>Version 1.0</p>"
-            "<p>A tool for generating keyboard plate and foam layers from PCB files.</p>"
-            "<p>Features:</p>"
+            "关于键盘PCB工具",
+            "<h3>键盘PCB工具</h3>"
+            "<p>版本 2.0</p>"
+            "<p>从PCB文件生成键盘定位板和泡沫层的工具。</p>"
+            "<p>功能:</p>"
             "<ul>"
-            "<li>Parse Altium ASCII PCB files</li>"
-            "<li>Auto-detect switches and IC positions</li>"
-            "<li>Configure avoidance zones</li>"
-            "<li>Export DXF layers for fabrication</li>"
+            "<li>解析Altium ASCII PCB文件</li>"
+            "<li>自动识别轴体、LED、IC</li>"
+            "<li>智能避空区域配置</li>"
+            "<li>配列模板检测与微调</li>"
+            "<li>一键导出DXF用于CNC制造</li>"
             "</ul>"
         )
 
     def closeEvent(self, event):
-        """Handle window close event."""
         if self.state.modified:
             reply = QMessageBox.question(
-                self,
-                "Unsaved Changes",
-                "You have unsaved changes. Do you want to save before exiting?",
-                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel
+                self, "未保存的更改",
+                "您有未保存的更改。是否退出？",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
             )
-
             if reply == QMessageBox.Save:
-                self.save_project()
-                if self.state.modified:  # Save was cancelled or failed
+                self._save_project()
+                if self.state.modified:
                     event.ignore()
                     return
             elif reply == QMessageBox.Cancel:
                 event.ignore()
                 return
-
         event.accept()
