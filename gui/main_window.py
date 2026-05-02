@@ -498,7 +498,7 @@ class MainWindow(QMainWindow):
         dialog = ExportDialog(
             pcb_data=self.state.pcb_data,
             layout_config=self.state.layout_config,
-            layer_config=self.state.layer_config,
+            layer_config_set=self.state.layer_config,
             avoidance_polygons=self.state.avoidance_polygons,
             parent=self
         )

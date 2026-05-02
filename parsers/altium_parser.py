@@ -46,7 +46,7 @@ def validate_ascii_pcb(file_path: str) -> tuple[bool, str]:
 
     # Check for ASCII PCB header markers
     text = header.decode("ascii", errors="replace")
-    if "|PCB|" not in text and "|FILEVERSION|" not in text:
+    if "|PCB|" not in text and "|FILEVERSION|" not in text and "|RECORD=Board|" not in text:
         return False, "无法识别 Altium ASCII PCB 格式，请确认文件格式"
 
     return True, ""
@@ -124,12 +124,13 @@ class AltiumASCIIParser:
 
     def _handle_component(self, rec: dict) -> None:
         # In Altium ASCII, components have an index used as owner for child pads
-        idx = int(rec.get("INDEX", 0))
+        idx = int(rec.get("INDEX", rec.get("INDEXFORSAVE", 0)) or 0)
         # Coordinates: altium uses 0.01mil units → convert to mm (1 mil = 0.0254mm)
         x = self._to_mm(rec.get("X", "0"))
         y = self._to_mm(rec.get("Y", "0"))
         rotation = float(rec.get("ROTATION", "0"))
-        ref = rec.get("COMPONENTDESCRIPTION", "") or rec.get("TEXTINFO", "") or rec.get("NAME", "")
+        ref = (rec.get("SOURCEDESIGNATOR", "") or rec.get("COMPONENTDESCRIPTION", "")
+               or rec.get("TEXTINFO", "") or rec.get("NAME", ""))
         footprint = rec.get("PATTERN", rec.get("FOOTPRINT", ""))
         layer = rec.get("LAYER", "")
 
@@ -139,11 +140,15 @@ class AltiumASCIIParser:
         }
 
     def _handle_pad(self, rec: dict) -> None:
-        owner = int(rec.get("OWNER", -1))
+        owner_raw = rec.get("COMPONENT", rec.get("OWNER", "-1"))
+        try:
+            owner = int(owner_raw)
+        except (ValueError, TypeError):
+            owner = -1
         x = self._to_mm(rec.get("X", "0"))
         y = self._to_mm(rec.get("Y", "0"))
-        xsize = self._to_mm(rec.get("XSIZE", "0"))
-        ysize = self._to_mm(rec.get("YSIZE", "0"))
+        xsize = self._to_mm(rec.get("XSIZE", rec.get("TOPXSIZE", "0")))
+        ysize = self._to_mm(rec.get("YSIZE", rec.get("TOPYSIZE", "0")))
         shape = rec.get("SHAPE", "RECTANGLE")
         hole = self._to_mm(rec.get("HOLESIZE", "0"))
 
@@ -244,7 +249,7 @@ class AltiumASCIIParser:
     def _extract_board_outline(self) -> Optional[BoardOutline]:
         """Try to extract board outline from tracks on outline/keepout layers."""
         outline_layers = {"outline", "keepout", "mechanical1", "mechanical 1",
-                          "board outline"}
+                          "board outline", "mechanical 5", "mechanical5"}
         outline_tracks = [
             t for t in self._tracks
             if t["layer"].lower() in outline_layers
@@ -260,15 +265,32 @@ class AltiumASCIIParser:
         return None
 
     def _extract_screw_holes(self) -> list[ScrewHole]:
-        """Detect screw holes from large vias."""
+        """Detect screw holes from large vias and component pads."""
         screw_holes = []
+        seen_positions = set()
+
         for v in self._vias:
             hole = v["holesize"]
             # Typical M2 screw hole: ~2.2mm, M2.5: ~2.7mm
             if hole >= 1.5:
-                screw_holes.append(ScrewHole(
-                    x=v["x"], y=v["y"], diameter=hole, source="auto",
-                ))
+                pos_key = (round(v["x"], 1), round(v["y"], 1))
+                if pos_key not in seen_positions:
+                    seen_positions.add(pos_key)
+                    screw_holes.append(ScrewHole(
+                        x=v["x"], y=v["y"], diameter=hole, source="auto",
+                    ))
+
+        # Also detect screw holes from components with STUD or M2 pattern
+        for idx, cdata in self._components.items():
+            pattern = cdata.get("footprint", "").upper()
+            if "STUD" in pattern or "M2" in pattern:
+                pos_key = (round(cdata["x"], 1), round(cdata["y"], 1))
+                if pos_key not in seen_positions:
+                    seen_positions.add(pos_key)
+                    screw_holes.append(ScrewHole(
+                        x=cdata["x"], y=cdata["y"], diameter=2.2, source="auto",
+                    ))
+
         return screw_holes
 
     @staticmethod
@@ -315,11 +337,17 @@ class AltiumASCIIParser:
         """Convert Altium coordinate units to millimeters.
 
         Altium ASCII uses 0.01mil (10^-5 inches) for coordinates.
-        Some fields may already be in mm. We detect by magnitude.
+        Some files use 'mil' suffix. Some fields may already be in mm.
         """
         try:
             v = float(value)
         except (ValueError, TypeError):
+            # Handle 'mil' suffix (e.g., "12647.4339mil")
+            if isinstance(value, str) and value.lower().endswith("mil"):
+                try:
+                    return float(value[:-3]) * 0.0254
+                except (ValueError, TypeError):
+                    return 0.0
             return 0.0
         # Altium PCB ASCII coordinates are in 0.01mil units
         # 1 mil = 0.0254mm, so 0.01mil = 0.000254mm

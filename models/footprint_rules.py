@@ -34,6 +34,7 @@ DEFAULT_RULES: list[FootprintRule] = [
     FootprintRule(pattern=r"^K\d+$", label="K prefix (K1, K2...)", priority=8),
     FootprintRule(pattern=r"^KEY\d+$", label="KEY prefix (KEY1...)", priority=6),
     FootprintRule(pattern=r"^MX\d+$", label="MX prefix (MX1...)", priority=4),
+    FootprintRule(pattern=r"^H\d+$", label="H prefix - Hall sensor (H1, H2...)", priority=5),
 ]
 
 
