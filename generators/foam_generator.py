@@ -19,13 +19,30 @@ def generate_foam_layer(
     layer_config: FoamLayerConfig,
     avoidance_polygons: list[AvoidancePolygon],
     output_path: str,
+    universal_mode: bool = True,
 ) -> None:
-    """Generate a single foam layer DXF file."""
+    """Generate a single foam layer DXF file.
+
+    Args:
+        universal_mode: If True, all switches get cutouts regardless of layout
+                        selection, and dashed lines mark variant boundaries.
+    """
     doc = ezdxf.new("R2010")
+
+    # Create layers
+    doc.layers.add("OUTLINE", color=7)
+    doc.layers.add("SCREW_HOLES", color=5)
+    doc.layers.add("CUTS", color=1)
+
+    # Add dashed linetype for universal template
+    doc.layers.add("DASHED_CUTS", color=8)
+    if "DASHED" not in doc.linetypes:
+        doc.linetypes.add("DASHED", pattern=[0.5, 0.25, -0.25])
+
     msp = doc.modelspace()
 
     # Compute avoidance zone for this layer
-    avoidance = compute_avoidance_zone(avoidance_polygons, layer_config)
+    avoidance = compute_avoidance_zone(avoidance_polygons, layer_config) if avoidance_polygons else None
 
     # Draw board outline
     if pcb.board_outline and pcb.board_outline.is_valid():
@@ -42,9 +59,14 @@ def generate_foam_layer(
             dxfattribs={"layer": "SCREW_HOLES"},
         )
 
-    # Get active switches
-    active_refs = layout.get_active_switch_refs()
-    switches = [c for c in pcb.get_switches() if c.ref in active_refs]
+    # Get switches - use all in universal mode
+    if universal_mode:
+        switches = pcb.get_switches()
+        if not switches:
+            switches = list(pcb.components)
+    else:
+        active_refs = layout.get_active_switch_refs() if layout and layout.groups else set()
+        switches = [c for c in pcb.get_switches() if c.ref in active_refs] if active_refs else pcb.get_switches()
 
     # Generate cutouts based on layer type
     cutout_type = layer_config.cutout_type

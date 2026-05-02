@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QDoubleValidator
 from models.pcb_data import PCBData, BoardOutline, ScrewHole
+from parsers.dxf_parser import parse_board_outline_dxf
 import math
 
 
@@ -256,13 +257,36 @@ class OutlineEditor(QWidget):
         self.outline_changed.emit([], "manual")
 
     def _on_browse_dxf(self):
-        """Browse for DXF file to import."""
+        """Browse for DXF file to import and parse board outline."""
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Import DXF Outline", "", "DXF Files (*.dxf);;All Files (*)"
         )
-        if file_path:
-            self.dxf_info_label.setText(file_path)
-            self.import_dxf_requested.emit()
+        if not file_path:
+            return
+
+        try:
+            outline, screw_holes = parse_board_outline_dxf(file_path)
+        except Exception as e:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "DXF Import Error", f"Failed to parse DXF:\n\n{str(e)}")
+            return
+
+        if outline and outline.is_valid():
+            self.outline_vertices = list(outline.vertices)
+            self._update_vertex_table()
+            self._update_outline_stats()
+            self.outline_changed.emit(self.outline_vertices, "dxf_import")
+            self.dxf_info_label.setText(f"{file_path} ({len(outline.vertices)} vertices)")
+        else:
+            self.dxf_info_label.setText(f"{file_path} (no outline found)")
+
+        # Import screw holes
+        if screw_holes:
+            for hole in screw_holes:
+                self._add_hole_to_table(hole.x, hole.y, hole.diameter, "DXF")
+                self.screw_holes.append(hole)
+
+        self.import_dxf_requested.emit()
 
     def _on_add_hole(self):
         """Add a new screw hole (enters placement mode)."""

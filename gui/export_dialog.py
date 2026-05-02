@@ -18,7 +18,9 @@ from models.pcb_data import PCBData
 from models.layout_group import LayoutConfig
 from models.avoidance import AvoidancePolygon
 
-from generators.plate_generator import generate_plate
+from generators.plate_generator import (
+    generate_plate, PLATE_VARIANT_ANSI, PLATE_VARIANT_7U_ENTER, PLATE_VARIANT_UNIVERSAL,
+)
 from generators.foam_generator import generate_foam_layer
 
 
@@ -115,7 +117,7 @@ class ExportDialog(QDialog):
         super().__init__(parent)
         self._pcb_data = pcb_data
         self._layout_config = layout_config
-        self._avoidance_polygons = avoidance_polygons
+        self._avoidance_polygons = avoidance_polygons or []
         self._layer_config_set = layer_config_set or LayerConfigSet()
         self._layer_configs: dict[str, FoamLayerConfig] = {}
         self._is_exporting = False
@@ -234,10 +236,10 @@ class ExportDialog(QDialog):
 
         # File naming pattern
         layout.addWidget(QLabel("File Name Pattern:"), 1, 0)
-        self._naming_pattern_edit = QLineEdit("{project}_{layer}.dxf")
+        self._naming_pattern_edit = QLineEdit("{project}_{layer}_{variant}.dxf")
         self._naming_pattern_edit.setToolTip(
-            "Use {project} for project name, {layer} for layer name\n"
-            "Example: mykb_plate.dxf, mykb_foam.dxf"
+            "Use {project} for project name, {layer} for layer name, {variant} for plate variant\n"
+            "Example: mykb_plate_ansi.dxf, mykb_foam.dxf"
         )
         layout.addWidget(self._naming_pattern_edit, 1, 1)
 
@@ -245,6 +247,23 @@ class ExportDialog(QDialog):
         layout.addWidget(QLabel("Project Name:"), 2, 0)
         self._project_name_edit = QLineEdit("keyboard")
         layout.addWidget(self._project_name_edit, 2, 1)
+
+        # Plate variant selection
+        layout.addWidget(QLabel("Plate Variant:"), 3, 0)
+        self._variant_combo = QComboBox()
+        self._variant_combo.addItems([
+            "Universal (all layouts with dashed template)",
+            "ANSI",
+            "七字回车 (7u Enter)",
+            "Both (ANSI + 七回)",
+        ])
+        self._variant_combo.setToolTip(
+            "Universal: includes all possible cuts with dashed lines\n"
+            "ANSI: standard ANSI layout\n"
+            "七字回车: 7u spacebar variant\n"
+            "Both: generate both ANSI and 七回 plates"
+        )
+        layout.addWidget(self._variant_combo, 3, 1)
 
         return group
 
@@ -331,6 +350,27 @@ class ExportDialog(QDialog):
         # Start export
         self._start_export(selected_layers, output_dir, project_name)
 
+    def _get_selected_variant(self) -> str:
+        """Get the selected plate variant identifier."""
+        idx = self._variant_combo.currentIndex()
+        if idx == 0:
+            return PLATE_VARIANT_UNIVERSAL
+        elif idx == 1:
+            return PLATE_VARIANT_ANSI
+        elif idx == 2:
+            return PLATE_VARIANT_7U_ENTER
+        elif idx == 3:
+            return "both"
+        return PLATE_VARIANT_UNIVERSAL
+
+    def _get_variant_suffix(self, variant: str) -> str:
+        """Get display suffix for a variant."""
+        return {
+            PLATE_VARIANT_UNIVERSAL: "universal",
+            PLATE_VARIANT_ANSI: "ansi",
+            PLATE_VARIANT_7U_ENTER: "7u",
+        }.get(variant, variant)
+
     def _start_export(self, layer_names: list[str], output_dir: str, project_name: str):
         """Start the export process."""
         self._is_exporting = True
@@ -339,12 +379,37 @@ class ExportDialog(QDialog):
         self._progress_widget.setVisible(True)
         self._export_btn.setEnabled(False)
 
+        variant = self._get_selected_variant()
+
+        # Determine which plate variants to generate
+        if variant == "both":
+            plate_variants = [PLATE_VARIANT_ANSI, PLATE_VARIANT_7U_ENTER]
+        else:
+            plate_variants = [variant]
+
         # Process each layer
-        total = len(layer_names)
         success_count = 0
         failed_layers = []
 
-        for i, layer_name in enumerate(layer_names):
+        # Build task list: for plate layers, expand by variant
+        tasks: list[tuple[str, str, str]] = []  # (layer_name, variant, output_path)
+        pattern = self._naming_pattern_edit.text()
+
+        for layer_name in layer_names:
+            if layer_name == "plate":
+                for v in plate_variants:
+                    suffix = self._get_variant_suffix(v)
+                    filename = pattern.replace("{project}", project_name).replace("{layer}", layer_name).replace("{variant}", suffix)
+                    tasks.append((layer_name, v, os.path.join(output_dir, filename)))
+            else:
+                filename = pattern.replace("{project}", project_name).replace("{layer}", layer_name).replace("{variant}", "")
+                # Clean up double underscores
+                filename = filename.replace("__", "_")
+                tasks.append((layer_name, "", os.path.join(output_dir, filename)))
+
+        total = len(tasks)
+
+        for i, (layer_name, plate_variant, output_path) in enumerate(tasks):
             if not self._is_exporting:
                 break
 
@@ -357,12 +422,8 @@ class ExportDialog(QDialog):
                 failed_layers.append((layer_name, "Layer config not found"))
                 continue
 
-            self._current_layer_label.setText(f"Exporting: {layer_config.name_cn}")
-
-            # Generate filename
-            pattern = self._naming_pattern_edit.text()
-            filename = pattern.replace("{project}", project_name).replace("{layer}", layer_name)
-            output_path = os.path.join(output_dir, filename)
+            variant_label = f" ({plate_variant})" if plate_variant else ""
+            self._current_layer_label.setText(f"Exporting: {layer_config.name_cn}{variant_label}")
 
             # Generate the appropriate file
             try:
@@ -372,7 +433,8 @@ class ExportDialog(QDialog):
                         self._layout_config,
                         layer_config,
                         self._avoidance_polygons,
-                        output_path
+                        output_path,
+                        plate_type=plate_variant,
                     )
                 else:
                     generate_foam_layer(
@@ -380,7 +442,7 @@ class ExportDialog(QDialog):
                         self._layout_config,
                         layer_config,
                         self._avoidance_polygons,
-                        output_path
+                        output_path,
                     )
                 success_count += 1
             except Exception as e:

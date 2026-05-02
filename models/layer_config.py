@@ -23,7 +23,7 @@ class FoamLayerConfig:
 # Default layer configs
 DEFAULT_LAYERS: list[FoamLayerConfig] = [
     FoamLayerConfig("plate", "定位板", 1.5, "rect", 14.0, 0.5),
-    FoamLayerConfig("sandwich_foam", "夹心棉", 3.0, "rect", 15.5, 1.0),
+    FoamLayerConfig("sandwich_foam", "夹心棉", 3.0, "rect", 16.0, 1.0),
     FoamLayerConfig("switch_foam", "轴下垫", 0.5, "circle_small", 4.0, 0.8),
     FoamLayerConfig("ixpe_pad", "声优垫", 0.5, "solid", 0.0, 0.3),
     FoamLayerConfig("bottom_foam", "底棉", 5.0, "circle_large", 10.0, 2.0),
