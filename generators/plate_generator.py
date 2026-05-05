@@ -49,6 +49,11 @@ class StabilizerPosition:
     orientation: str = "horizontal"  # "horizontal" or "vertical"
 
 
+def _mirror_x(value: float, center: float) -> float:
+    """Mirror X coordinate about center."""
+    return 2 * center - value
+
+
 def generate_plate(
     pcb: PCBData,
     layout: LayoutConfig,
@@ -58,11 +63,13 @@ def generate_plate(
     cutout_size: tuple[float, float] = (MX_CUTOUT_W, MX_CUTOUT_H),
     corner_radius: float = MX_CORNER_RADIUS,
     plate_type: str = PLATE_VARIANT_UNIVERSAL,
+    mirror_x: bool = False,
 ) -> None:
     """Generate a positioning plate DXF file.
 
     Args:
         plate_type: "ansi", "7u_enter", or "universal"
+        mirror_x: If True, mirror X coordinates to flip horizontal direction.
     """
     doc = ezdxf.new("R2010")
 
@@ -90,15 +97,37 @@ def generate_plate(
     # Compute avoidance zone
     avoidance = compute_avoidance_zone(avoidance_polygons, layer_config) if avoidance_polygons else None
 
-    # Draw board outline
-    if pcb.board_outline and pcb.board_outline.is_valid():
+    # Compute mirror center from board outline bounds
+    mirror_center = 0.0
+    if mirror_x and pcb.board_outline and pcb.board_outline.is_valid():
+        xs = [v[0] for v in pcb.board_outline.vertices]
+        mirror_center = (min(xs) + max(xs)) / 2
+
+    # Draw board outline (directly from outline layer tracks and arcs)
+    if pcb.outline_tracks or pcb.outline_arcs:
+        for track in pcb.outline_tracks:
+            x1 = _mirror_x(track.x1, mirror_center) if mirror_x else track.x1
+            x2 = _mirror_x(track.x2, mirror_center) if mirror_x else track.x2
+            msp.add_line((x1, track.y1), (x2, track.y2), dxfattribs={"layer": "OUTLINE"})
+        for arc in pcb.outline_arcs:
+            cx = _mirror_x(arc.cx, mirror_center) if mirror_x else arc.cx
+            if mirror_x:
+                sa, ea = 180 - arc.end_angle, 180 - arc.start_angle
+            else:
+                sa, ea = arc.start_angle, arc.end_angle
+            msp.add_arc((cx, arc.cy), arc.radius, start_angle=sa, end_angle=ea,
+                        dxfattribs={"layer": "OUTLINE"})
+    elif pcb.board_outline and pcb.board_outline.is_valid():
         outline_points = pcb.board_outline.vertices
+        if mirror_x:
+            outline_points = [(_mirror_x(v[0], mirror_center), v[1]) for v in outline_points]
         msp.add_lwpolyline(outline_points + [outline_points[0]], dxfattribs={"layer": "OUTLINE"})
 
     # Draw screw holes
     for hole in pcb.screw_holes:
+        hx = _mirror_x(hole.x, mirror_center) if mirror_x else hole.x
         msp.add_circle(
-            (hole.x, hole.y), hole.diameter / 2,
+            (hx, hole.y), hole.diameter / 2,
             dxfattribs={"layer": "SCREW_HOLES"},
         )
 
@@ -107,7 +136,8 @@ def generate_plate(
 
     # Draw switch cutouts
     for sw in switches:
-        cx, cy = sw.x, sw.y
+        cx = _mirror_x(sw.x, mirror_center) if mirror_x else sw.x
+        cy = sw.y
         hw, hh = cutout_size[0] / 2, cutout_size[1] / 2
 
         cutout = box(cx - hw, cy - hh, cx + hw, cy + hh)
@@ -118,11 +148,18 @@ def generate_plate(
 
     # Draw stabilizer cutouts
     for stab in stab_positions:
+        if mirror_x:
+            stab = StabilizerPosition(
+                switch_x=_mirror_x(stab.switch_x, mirror_center),
+                switch_y=stab.switch_y,
+                key_size=stab.key_size,
+                orientation=stab.orientation,
+            )
         _draw_stabilizer(msp, stab, layer="STAB_CUTS")
 
     # Draw dashed template for universal variant
     if plate_type == PLATE_VARIANT_UNIVERSAL:
-        _draw_universal_dashed_template(msp, switches, stab_positions)
+        _draw_universal_dashed_template(msp, switches, stab_positions, mirror_x, mirror_center)
 
     doc.saveas(output_path)
 
@@ -180,6 +217,8 @@ def _draw_universal_dashed_template(
     msp,
     switches: list[Component],
     stabs: list[StabilizerPosition],
+    mirror_x: bool = False,
+    mirror_center: float = 0.0,
 ) -> None:
     """Draw dashed lines for optional cut positions in universal template.
 
@@ -192,13 +231,16 @@ def _draw_universal_dashed_template(
         if spacing == 0:
             continue
 
+        stab_cx = _mirror_x(stab.switch_x, mirror_center) if mirror_x else stab.switch_x
+        stab_cy = stab.switch_y
+
         if stab.orientation == "horizontal":
             dx, dy = spacing, 0
         else:
             dx, dy = 0, spacing
 
-        for sx, sy in [(stab.switch_x - dx, stab.switch_y - dy),
-                       (stab.switch_x + dx, stab.switch_y + dy)]:
+        for sx, sy in [(stab_cx - dx, stab_cy - dy),
+                       (stab_cx + dx, stab_cy + dy)]:
             msp.add_circle(
                 (sx, sy), STAB_WIRE_RADIUS,
                 dxfattribs={"layer": "DASHED_CUTS", "linetype": "DASHED"},
