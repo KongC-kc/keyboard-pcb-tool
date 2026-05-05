@@ -138,6 +138,8 @@ class PCBData:
     board_outline: Optional[BoardOutline] = None
     screw_holes: list[ScrewHole] = field(default_factory=list)
     source_file: str = ""
+    outline_tracks: list[TrackSegment] = field(default_factory=list)
+    outline_arcs: list[ArcSegment] = field(default_factory=list)
 
     def get_switches(self) -> list[Component]:
         return [c for c in self.components if c.classification == "switch"]
@@ -153,6 +155,8 @@ class PCBData:
             "board_outline": self.board_outline.to_dict() if self.board_outline else None,
             "screw_holes": [h.to_dict() for h in self.screw_holes],
             "source_file": self.source_file,
+            "outline_tracks": [t.to_dict() for t in self.outline_tracks],
+            "outline_arcs": [a.to_dict() for a in self.outline_arcs],
         }
 
     @classmethod
@@ -164,6 +168,8 @@ class PCBData:
             board_outline=BoardOutline.from_dict(d["board_outline"]) if d.get("board_outline") else None,
             screw_holes=[ScrewHole.from_dict(h) for h in d.get("screw_holes", [])],
             source_file=d.get("source_file", ""),
+            outline_tracks=[TrackSegment.from_dict(t) for t in d.get("outline_tracks", [])],
+            outline_arcs=[ArcSegment.from_dict(a) for a in d.get("outline_arcs", [])],
         )
 
     def save_json(self, path: str) -> None:

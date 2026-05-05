@@ -98,11 +98,12 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.canvas, stretch=3)
 
         # Connect canvas signals
-        self.canvas.signal_cursor_position.connect(self._on_cursor)
-        self.canvas.signal_zoom_changed.connect(self._on_zoom)
-        self.canvas.signal_avoidance_created.connect(self._on_avoidance_created)
-        self.canvas.signal_hole_placed.connect(self._on_hole_placed)
-        self.canvas.signal_outline_point_added.connect(self._on_outline_point_added)
+        self.canvas._view.signal_cursor_position.connect(self._on_cursor)
+        self.canvas._view.signal_zoom_changed.connect(self._on_zoom)
+        self.canvas._view.signal_avoidance_created.connect(self._on_avoidance_created)
+        self.canvas._view.signal_hole_placed.connect(self._on_hole_placed)
+        self.canvas._view.signal_outline_point_added.connect(self._on_outline_point_added)
+        self.canvas.signal_preview_layer_changed.connect(self._on_preview_layer_changed)
 
         # Right: stacked step panels
         right_layout = QVBoxLayout()
@@ -194,6 +195,8 @@ class MainWindow(QMainWindow):
         self._avoidance_panel = AvoidanceEditor(parent=self)
         self._avoidance_panel.polygon_confirmed.connect(self._on_avoidance_confirmed)
         self._avoidance_panel.polygon_deleted.connect(self._on_avoidance_deleted)
+        self._avoidance_panel.polygon_added.connect(self._on_avoidance_added)
+        self._avoidance_panel.polygon_updated.connect(self._on_avoidance_updated)
         self._avoidance_panel.draw_mode_requested.connect(self._on_draw_mode_requested)
         layout.addWidget(self._avoidance_panel)
 
@@ -205,10 +208,10 @@ class MainWindow(QMainWindow):
         self._outline_panel.hole_added.connect(self._on_hole_added)
         self._outline_panel.hole_removed.connect(self._on_hole_removed)
         self._outline_panel.draw_outline_requested.connect(
-            lambda: self.canvas.set_interaction_mode(MODE_DRAW_OUTLINE)
-        )
+            lambda: self.canvas.set_interaction_mode(MODE_DRAW_OUTLINE)        )
         self._outline_panel.place_hole_requested.connect(
             lambda: self.canvas.set_interaction_mode(MODE_PLACE_HOLE)
+
         )
         ol_layout.addWidget(self._outline_panel)
         layout.addWidget(outline_group)
@@ -264,6 +267,7 @@ class MainWindow(QMainWindow):
         self._split_layout.addWidget(QLabel(f"{label}:"), row, 0)
         combo = QComboBox()
         combo.addItems(options)
+        combo.currentIndexChanged.connect(self._on_split_option_changed)
         self._split_combos[key] = combo
         self._split_layout.addWidget(combo, row, 1)
 
@@ -364,8 +368,8 @@ class MainWindow(QMainWindow):
 
         view_menu = menubar.addMenu("视图(&V)")
         view_menu.addAction("适应内容", self.canvas.fit_to_content)
-        view_menu.addAction("放大", lambda: self.canvas._zoom(1.15))
-        view_menu.addAction("缩小", lambda: self.canvas._zoom(1.0 / 1.15))
+        view_menu.addAction("放大", lambda: self.canvas._view.scale(1.15, 1.15))
+        view_menu.addAction("缩小", lambda: self.canvas._view.scale(1.0 / 1.15, 1.0 / 1.15))
 
         help_menu = menubar.addMenu("帮助(&H)")
         help_menu.addAction("关于", self._show_about)
@@ -407,6 +411,13 @@ class MainWindow(QMainWindow):
         # Step-specific setup
         if self._current_step == 2:
             self._update_layout_template_info()
+        # Update preview when entering steps 1+
+        if self._current_step >= 1:
+            self._update_preview()
+
+    def _on_preview_layer_changed(self, layer_key: str):
+        """Handle preview layer change from combo box."""
+        self._update_preview()
 
     def _next_step(self):
         if self._current_step == STEP_COUNT - 1:
@@ -453,7 +464,6 @@ class MainWindow(QMainWindow):
 
         # Distribute data
         self.canvas.set_pcb_data(pcb)
-        self.canvas.fit_to_content()
 
         if self._outline_panel:
             self._outline_panel.set_pcb_data(pcb)
@@ -534,6 +544,51 @@ class MainWindow(QMainWindow):
         """Update split option combos when template selection changes."""
         if 0 <= index < len(self._detected_templates):
             self._apply_template_splits(self._detected_templates[index])
+        # Auto-apply layout config and update preview
+        self._auto_apply_layout()
+
+    def _on_split_option_changed(self, index: int):
+        """Auto-apply layout when a split option changes."""
+        self._auto_apply_layout()
+
+    def _auto_apply_layout(self):
+        """Apply layout config silently (no dialog) and update preview."""
+        if not self._detected_templates or not self.state.pcb_data:
+            return
+        tpl_idx = self._template_combo.currentIndex()
+        if tpl_idx < 0 or tpl_idx >= len(self._detected_templates):
+            return
+        template = self._detected_templates[tpl_idx]
+
+        from avoidance.layout_hints import find_candidate_split_zones
+        switches = self.state.pcb_data.get_switches()
+        split_zones = find_candidate_split_zones(switches)
+
+        groups = []
+        for opt_idx, split_opt in enumerate(template.split_options):
+            combo = self._split_combos.get(split_opt.key)
+            if not combo:
+                continue
+            sel_idx = combo.currentIndex()
+            opts = [LayoutOption(f"{split_opt.key}_{i}", name, []) for i, name in enumerate(split_opt.options)]
+            if opt_idx < len(split_zones):
+                zone = split_zones[opt_idx]
+                zone_refs = [sw.ref for sw in zone.switches]
+                for i, opt in enumerate(opts):
+                    if i < len(zone_refs):
+                        opt.switch_refs = [zone_refs[i]]
+                    else:
+                        opt.switch_refs = zone_refs[:1]
+            groups.append(LayoutGroup(
+                id=split_opt.key,
+                name=split_opt.label,
+                description=f"{split_opt.label}配列选择",
+                options=opts,
+                selected_option_id=opts[sel_idx].id if sel_idx < len(opts) else opts[0].id,
+            ))
+        self.state.layout_config = LayoutConfig(groups=groups)
+        self.state.modified = True
+        self._update_preview()
 
     def _apply_template_splits(self, template: LayoutTemplate):
         """Update split option combos to match the selected template's options."""
@@ -561,13 +616,41 @@ class MainWindow(QMainWindow):
             return
         template = self._detected_templates[tpl_idx]
 
+        # Find split zones to map switches to layout options
+        from avoidance.layout_hints import find_candidate_split_zones
+        switches = self.state.pcb_data.get_switches()
+        split_zones = find_candidate_split_zones(switches)
+
+        # Map split zones by their position index for matching with split options
+        # Each split zone corresponds to a split option key
+        zone_by_idx = {i: z for i, z in enumerate(split_zones)}
+
+        # Build a set of excluded switch refs (switches NOT selected in split zones)
+        excluded_refs = set()
+        included_refs_per_option = {}  # option_id -> list of switch refs to include
+
         groups = []
-        for split_opt in template.split_options:
+        for opt_idx, split_opt in enumerate(template.split_options):
             combo = self._split_combos.get(split_opt.key)
             if not combo:
                 continue
             sel_idx = combo.currentIndex()
             opts = [LayoutOption(f"{split_opt.key}_{i}", name, []) for i, name in enumerate(split_opt.options)]
+
+            # If there's a matching split zone, assign switch refs
+            if opt_idx < len(split_zones):
+                zone = split_zones[opt_idx]
+                zone_refs = [sw.ref for sw in zone.switches]
+                # All zone switches are excluded by default
+                excluded_refs.update(zone_refs)
+                # For each variant, include the corresponding switch
+                for i, opt in enumerate(opts):
+                    if i < len(zone_refs):
+                        opt.switch_refs = [zone_refs[i]]
+                    else:
+                        # Default: include first switch
+                        opt.switch_refs = zone_refs[:1]
+
             groups.append(LayoutGroup(
                 id=split_opt.key,
                 name=split_opt.label,
@@ -578,6 +661,7 @@ class MainWindow(QMainWindow):
 
         self.state.layout_config = LayoutConfig(groups=groups)
         self.state.modified = True
+        self._update_preview()
 
         QMessageBox.information(self, "配列配置", f"已应用 {template.name} 配列配置。")
 
@@ -697,37 +781,81 @@ class MainWindow(QMainWindow):
 
     def _on_avoidance_confirmed(self, index: int):
         self.state.modified = True
+        self._update_preview()
 
     def _on_avoidance_deleted(self, index: int):
-        if 0 <= index < len(self.state.avoidance_polygons):
-            self.state.avoidance_polygons.pop(index)
+        # Editor already removed from the shared list — just mark modified
         self.state.modified = True
+        self._update_preview()
+
+    def _on_avoidance_added(self, vertices: list, source: str):
+        self.state.modified = True
+        self._update_preview()
+
+    def _on_avoidance_updated(self, index: int, poly):
+        self.state.modified = True
+        self._update_preview()
+
+    def _update_preview(self):
+        """Refresh the canvas preview to reflect current editor state."""
+        if not self.state.pcb_data:
+            return
+        outline = None
+        if self._outline_panel:
+            outline = self._outline_panel.get_board_outline()
+        holes = None
+        if self._outline_panel:
+            holes = self._outline_panel.get_screw_holes()
+        avoidance = self.state.avoidance_polygons
+
+        # Compute excluded switch refs from layout config
+        excluded_refs = set()
+        cfg = self.state.layout_config
+        if cfg and cfg.groups:
+            # Collect all refs mentioned in any option
+            all_zone_refs = set()
+            for g in cfg.groups:
+                for opt in g.options:
+                    all_zone_refs.update(opt.switch_refs)
+            # Collect refs from selected options
+            selected_refs = cfg.get_active_switch_refs()
+            # Exclude zone refs that are NOT selected
+            excluded_refs = all_zone_refs - selected_refs
+
+        self.canvas.update_preview(
+            board_outline=outline,
+            screw_holes=holes,
+            avoidance_polygons=avoidance,
+            layout_config=self.state.layout_config,
+            excluded_switch_refs=excluded_refs,
+        )
 
     def _on_draw_mode_requested(self, mode: str):
         if mode == "rect":
-            self.canvas.set_interaction_mode(MODE_DRAW_RECT)
+            self.canvas._view.set_interaction_mode(MODE_DRAW_RECT)
         elif mode == "polygon":
-            self.canvas.set_interaction_mode(MODE_DRAW_POLYGON)
+            self.canvas._view.set_interaction_mode(MODE_DRAW_POLYGON)
         elif mode == "edit":
-            self.canvas.set_interaction_mode(MODE_SELECT)
+            self.canvas._view.set_interaction_mode(MODE_SELECT)
 
     def _on_outline_changed(self, vertices: list, source: str):
         if self.state.pcb_data:
             self.state.pcb_data.board_outline = BoardOutline(vertices=vertices, source=source)
-            self.canvas.set_pcb_data(self.state.pcb_data)
         self.state.modified = True
+        self._update_preview()
 
     def _on_hole_added(self, x: float, y: float, diameter: float):
         if self.state.pcb_data:
             hole = ScrewHole(x=x, y=y, diameter=diameter, source="manual")
             self.state.pcb_data.screw_holes.append(hole)
-            self.canvas.set_pcb_data(self.state.pcb_data)
         self.state.modified = True
+        self._update_preview()
 
     def _on_hole_removed(self, index: int):
         if self.state.pcb_data and 0 <= index < len(self.state.pcb_data.screw_holes):
             self.state.pcb_data.screw_holes.pop(index)
-            self.canvas.set_pcb_data(self.state.pcb_data)
+        self.state.modified = True
+        self._update_preview()
         self.state.modified = True
 
     # ── Project save/load ───────────────────────────────────────────

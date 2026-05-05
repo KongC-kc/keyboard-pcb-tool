@@ -170,8 +170,8 @@ class AltiumASCIIParser:
         self._tracks.append(track)
 
     def _handle_arc(self, rec: dict) -> None:
-        cx = self._to_mm(rec.get("X", "0"))
-        cy = self._to_mm(rec.get("Y", "0"))
+        cx = self._to_mm(rec.get("LOCATION.X", rec.get("X", "0")))
+        cy = self._to_mm(rec.get("LOCATION.Y", rec.get("Y", "0")))
         radius = self._to_mm(rec.get("RADIUS", "0"))
         start = float(rec.get("STARTANGLE", "0"))
         end = float(rec.get("ENDANGLE", "360"))
@@ -235,6 +235,20 @@ class AltiumASCIIParser:
         # Detect board outline from outline/keepout layer tracks
         outline = self._extract_board_outline()
 
+        # Extract raw outline layer tracks and arcs for direct DXF export
+        outline_layers = {"outline", "keepout", "mechanical1", "mechanical 1",
+                          "board outline", "mechanical 5", "mechanical5"}
+        outline_tracks = [
+            TrackSegment(t["x1"], t["y1"], t["x2"], t["y2"], t["layer"], t["width"])
+            for t in self._tracks
+            if t["layer"].lower() in outline_layers
+        ]
+        outline_arcs = [
+            ArcSegment(a["cx"], a["cy"], a["radius"], a["start_angle"], a["end_angle"], a["layer"])
+            for a in self._arcs
+            if a["layer"].lower() in outline_layers
+        ]
+
         # Detect screw holes: large vias or pads on mechanical layers
         screw_holes = self._extract_screw_holes()
 
@@ -245,6 +259,8 @@ class AltiumASCIIParser:
             board_outline=outline,
             screw_holes=screw_holes,
             source_file=str(file_path),
+            outline_tracks=outline_tracks,
+            outline_arcs=outline_arcs,
         )
 
     def _extract_board_outline(self) -> Optional[BoardOutline]:
